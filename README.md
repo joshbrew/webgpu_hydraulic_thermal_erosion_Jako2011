@@ -35,9 +35,9 @@ Another result on the same map:
 <img width="300" height="300" alt="Screenshot 2026-04-09 145435" src="https://github.com/user-attachments/assets/640892ac-2ebe-4f51-8b3a-5a5f41b1f72b" />
 <img width="300" height="300" alt="Screenshot 2026-04-09 145456" src="https://github.com/user-attachments/assets/c854e42f-90d9-412d-96cb-7813437f6a0c" />
 
-Another erosion result (same map, exported):
+Another erosion result (same map, exported in-app):
 
-<img width="300" height="300" alt="noise-main (11)_dem_export" src="https://github.com/user-attachments/assets/1ef240f9-6824-4346-9c18-12a184b7aacf" />
+<img width="800" height="800" alt="noise-main_export" src="https://github.com/user-attachments/assets/929fe38e-c4ea-4bef-9e1d-0616a8591706" />
 
 More results:
 
