@@ -52,6 +52,7 @@ And for fun using an image from our [webgpu fractal explorer](https://github.com
 <img width="300" height="300" alt="fractal-1536-yfbvgz_dem_export" src="https://github.com/user-attachments/assets/4de40ea7-a221-4a2a-9cf4-929cca641cc8" />
 <img width="300" height="300" alt="fractal-1536-yfbvgz_dem_export (1)" src="https://github.com/user-attachments/assets/aed1d993-f820-4a92-8592-36fdfdecc278" />
 
+This was heavily vibe coded, just FYI.
 
 ### License
 
