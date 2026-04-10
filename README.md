@@ -55,7 +55,7 @@ And for fun using an image from our [webgpu fractal explorer](https://github.com
 
 MIT
 
-Go crazy!
+Go crazy! Feel free to make pull requests for feature improvements/additions.
 
 
 
