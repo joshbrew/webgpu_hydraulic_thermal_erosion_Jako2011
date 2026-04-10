@@ -39,7 +39,7 @@ Another result on the same map:
 
 Another erosion result (same map, exported in-app):
 
-<img width="800" height="800" alt="noise-main_export" src="https://github.com/user-attachments/assets/929fe38e-c4ea-4bef-9e1d-0616a8591706" />
+<img width="300" height="300" alt="noise-main_export" src="https://github.com/user-attachments/assets/929fe38e-c4ea-4bef-9e1d-0616a8591706" />
 
 More results:
 
