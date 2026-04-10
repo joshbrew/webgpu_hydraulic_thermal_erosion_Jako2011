@@ -3,7 +3,7 @@
 
 ## Try it: [https://webgpuerosion.netlify.app/](https://webgpuerosion.netlify.app/)
 
-Browser WebGPU implementation of "Fast Hydraulic and Thermal Erosion on the GPU" by Balazs Jako (2011) with some modern tweaks for WebGPU and more control knobs.
+Browser WebGPU implementation of "[Fast Hydraulic and Thermal Erosion on the GPU](https://old.cescg.org/CESCG-2011/papers/TUBudapest-Jako-Balazs.pdf)" by Balazs Jako (2011) with some modern tweaks for WebGPU and more control knobs.
 
 Import images (heightmaps, DEM, anything) and run erosion simulations. Works on up to ~2048x2048 images in browser in the current version (we have a laptop RTX 4070). We tried higher res texture arrays but it looked bad using a chunking techniques to overcome buffer size limits (2GB in browser) on our last attempt. We might revisit it. I'm sure there's more performance optimization to do, and the SWE render is jank.
 
