@@ -43,6 +43,12 @@ Another erosion result (same map, exported in-app):
 
 More results:
 
+
+<img width="300" height="300" alt="noise-main (10)" src="https://github.com/user-attachments/assets/5496fa7b-5ca1-44ef-b5bb-55f8bae2ca4a" />
+<img width="300" height="300" alt="noise-main (10)_dem_export" src="https://github.com/user-attachments/assets/9032e907-3cbd-4dc7-b81a-a8b8fcb3ba93" />
+<img width="300" height="300" alt="noise-main (10)_dem_export (2)" src="https://github.com/user-attachments/assets/635cf9d6-00d5-4d81-bcec-443cb0753002" />
+
+
 <img width="300" height="300" alt="Screenshot 2026-04-08 165014" src="https://github.com/user-attachments/assets/8e22699c-df47-4ae1-b438-5380c780931e" />
 <img width="300" height="300" alt="Screenshot 2026-04-08 163138" src="https://github.com/user-attachments/assets/82f4aa14-f01e-4645-b7ec-0cd70c8a95b2" />
 
