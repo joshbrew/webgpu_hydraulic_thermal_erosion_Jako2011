@@ -1,4 +1,4 @@
-# WebGPU real time Hydraulic + Thermal erosion
+# WebGPU real-time Hydraulic + Thermal erosion
 <img width="800" alt="Screenshot 2026-04-09 145612" src="https://github.com/user-attachments/assets/2f41f99e-cb94-48fc-8844-99460129a27f" />
 
 ## Try it: [https://webgpuerosion.netlify.app/](https://webgpuerosion.netlify.app/)
