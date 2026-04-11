@@ -100,8 +100,13 @@ export default class WebGPUTerrainErosion {
     this.thermalPipeBufferB = null;
     this.readbackBuffer = null;
     this.customSpringBuffer = null;
+    this.layerTopBuffer = null;
+    this.layerSurfaceValues = new Float32Array(0);
+    this.layerMaterialValues = new Float32Array(16);
+    this.layerMaterialBuffer = null;
     this.paintedSpringMap = new Float32Array(0);
     this.allocatedPaintedSpringByteLength = 0;
+    this.allocatedReadbackByteLength = 0;
     this.renderUniformValues = new Float32Array(40);
     this.renderUniformBufferTerrain = null;
     this.renderUniformBufferWater = null;
@@ -153,6 +158,20 @@ export default class WebGPUTerrainErosion {
     this.initialized = false;
     this.ready = false;
     this.latestReadbackStats = null;
+    this.lastErosionPassMs = 0;
+    this.lastRenderPassMs = 0;
+    this.avgErosionPassMs = 0;
+    this.avgRenderPassMs = 0;
+    this.lastCpuErosionPassMs = 0;
+    this.lastCpuRenderPassMs = 0;
+    this.avgCpuErosionPassMs = 0;
+    this.avgCpuRenderPassMs = 0;
+    this.lastGpuErosionPassMs = 0;
+    this.lastGpuRenderPassMs = 0;
+    this.avgGpuErosionPassMs = 0;
+    this.avgGpuRenderPassMs = 0;
+    this.layeredDemEnabled = false;
+    this.layerConfigMode = 'single';
 
     this.simulationParams = {
       cellSize: 1,
@@ -161,14 +180,14 @@ export default class WebGPUTerrainErosion {
       evaporationRate: 0.015,
       pipeArea: 20.0,
       gravity: 9.81,
-      capacityScale: 1.0,
-      suspensionRate: 0.5,
-      depositionRate: 0.92,
-      softeningRate: 5.0,
-      maxErosionDepth: 0.12,
-      thermalRate: 0.45,
-      talusSlopeCoeff: 0.8,
-      talusSlopeBias: 0.1,
+      capacityScale: 0.82,
+      suspensionRate: 0.32,
+      depositionRate: 1.22,
+      softeningRate: 2.8,
+      maxErosionDepth: 0.09,
+      thermalRate: 0.24,
+      talusSlopeCoeff: 0.92,
+      talusSlopeBias: 0.12,
       renderHeightScale: 0.08,
       waterOpacity: 0.28,
       sedimentTint: 0.35,
@@ -188,6 +207,7 @@ export default class WebGPUTerrainErosion {
       sourceTimeOffset: 0.0,
       historyDecay: 0.9997,
       edgeDrainStrength: 0.08,
+      edgeWaterFloor: 0.0,
       renderMode: 0,
       cameraAzimuthDeg: 45,
       cameraElevationDeg: 42,
@@ -251,6 +271,12 @@ export default class WebGPUTerrainErosion {
       label: 'paper-render-params-water',
     });
 
+    this.layerMaterialBuffer = this.device.createBuffer({
+      size: alignTo(this.layerMaterialValues.byteLength, 16),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: 'paper-layer-material-params',
+    });
+
     this.sceneSampler = this.device.createSampler({
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
@@ -277,11 +303,13 @@ export default class WebGPUTerrainErosion {
     this.thermalPipeBufferB?.destroy?.();
     this.readbackBuffer?.destroy?.();
     this.customSpringBuffer?.destroy?.();
+    this.layerTopBuffer?.destroy?.();
     this.depthTexture?.destroy?.();
     this.sceneColorTexture?.destroy?.();
     this.dummySceneTexture?.destroy?.();
     this.renderUniformBufferTerrain?.destroy?.();
     this.renderUniformBufferWater?.destroy?.();
+    this.layerMaterialBuffer?.destroy?.();
     this.paramBuffer?.destroy?.();
     this.stepParamBuffer?.destroy?.();
     this.fluxBuffer = null;
@@ -290,8 +318,13 @@ export default class WebGPUTerrainErosion {
     this.thermalPipeBufferB = null;
     this.readbackBuffer = null;
     this.customSpringBuffer = null;
+    this.layerTopBuffer = null;
+    this.layerSurfaceValues = new Float32Array(0);
+    this.layerMaterialBuffer = null;
+    this.layerMaterialValues = new Float32Array(16);
     this.paintedSpringMap = new Float32Array(0);
     this.allocatedPaintedSpringByteLength = 0;
+    this.allocatedReadbackByteLength = 0;
     this.depthTexture = null;
     this.depthTextureView = null;
     this.depthTextureSize = { width: 0, height: 0 };
@@ -302,6 +335,7 @@ export default class WebGPUTerrainErosion {
     this.dummySceneView = null;
     this.renderUniformBufferTerrain = null;
     this.renderUniformBufferWater = null;
+    this.layerMaterialBuffer = null;
     this.paramBuffer = null;
     this.stepParamBuffer = null;
     this.stepParamCapacity = 0;
@@ -322,11 +356,26 @@ export default class WebGPUTerrainErosion {
     this.dispatchY = 0;
     this.drawCount = 0;
     this.latestReadbackStats = null;
+    this.lastErosionPassMs = 0;
+    this.lastRenderPassMs = 0;
+    this.avgErosionPassMs = 0;
+    this.avgRenderPassMs = 0;
+    this.lastCpuErosionPassMs = 0;
+    this.lastCpuRenderPassMs = 0;
+    this.avgCpuErosionPassMs = 0;
+    this.avgCpuRenderPassMs = 0;
+    this.lastGpuErosionPassMs = 0;
+    this.lastGpuRenderPassMs = 0;
+    this.avgGpuErosionPassMs = 0;
+    this.avgGpuRenderPassMs = 0;
     this.paintedSpringMap = new Float32Array(0);
   }
 
   setSimulationParams(next = {}) {
-    Object.assign(this.simulationParams, next);
+    const normalized = { ...next };
+    if (Number.isFinite(normalized.erodabilityBase) && !Number.isFinite(normalized.hardnessBase)) normalized.hardnessBase = normalized.erodabilityBase;
+    if (Number.isFinite(normalized.erodabilityVariation) && !Number.isFinite(normalized.hardnessVariation)) normalized.hardnessVariation = normalized.erodabilityVariation;
+    Object.assign(this.simulationParams, normalized);
     if (this.paramBuffer && this.device) {
       this.#writeParams();
     }
@@ -379,6 +428,10 @@ export default class WebGPUTerrainErosion {
         if (data[base + 4] < 0.5) continue;
         const terrain = clamp(data[base] + direction * amount * falloff, 0.0, 2.0);
         data[base] = terrain;
+        const fallbackHardness = Number.isFinite(data[base + 3]) ? data[base + 3] : this.simulationParams.hardnessBase;
+        data[base + 3] = this.layerSurfaceValues.length === this.cellCount * 4
+          ? this.#resolveLayerHardnessForTerrain(this.layerSurfaceValues, i * 4, terrain, fallbackHardness)
+          : fallbackHardness;
       }
     }
 
@@ -401,9 +454,7 @@ export default class WebGPUTerrainErosion {
     const hardness = clamp(Number(brush.hardness) || 0.5, 0.01, 1.0);
     const erase = !!brush.erase;
 
-    if (!(this.paintedSpringMap instanceof Float32Array) || this.paintedSpringMap.length !== this.cellCount) {
-      this.paintedSpringMap = new Float32Array(this.cellCount);
-    }
+    this.#ensurePaintedSpringMap();
 
     const minX = Math.max(0, Math.floor(centerX - radius - 1));
     const maxX = Math.min(this.width - 1, Math.ceil(centerX + radius + 1));
@@ -435,15 +486,99 @@ export default class WebGPUTerrainErosion {
   }
 
   clearPaintedSprings() {
-    if (!(this.paintedSpringMap instanceof Float32Array) || this.paintedSpringMap.length !== this.cellCount) {
-      this.paintedSpringMap = new Float32Array(this.cellCount);
-    } else {
+    if (this.paintedSpringMap instanceof Float32Array && this.paintedSpringMap.length === this.cellCount) {
       this.paintedSpringMap.fill(0.0);
     }
     this.#writeCustomSpringBuffer();
     this.#writeParams();
     this.render();
     return this.getSourcePoints();
+  }
+
+  #normalizeLayerConfigArray(options = {}) {
+    const baseHardMin = clamp(this.simulationParams.hardnessBase ?? 0.16, 0.0, 1.0);
+    const baseHardMax = clamp(baseHardMin + Math.max(0.0, this.simulationParams.hardnessVariation ?? 0.03), 0.0, 1.0);
+    const defaults = [
+      { enabled: true, label: 'Base', hardnessMin: baseHardMin, hardnessMax: baseHardMax, thermalEnabled: true },
+      { enabled: false, label: 'Silt', hardnessMin: 0.08, hardnessMax: 0.16, thermalEnabled: true },
+      { enabled: false, label: 'Clay', hardnessMin: 0.16, hardnessMax: 0.28, thermalEnabled: true },
+      { enabled: false, label: 'Bedrock', hardnessMin: 0.58, hardnessMax: 0.90, thermalEnabled: true },
+    ];
+    const inputLayers = Array.isArray(options.layerConfig?.layers) ? options.layerConfig.layers : [];
+    return defaults.map((fallback, index) => {
+      const src = inputLayers[index] || {};
+      const heightMin = Number.isFinite(src.heightMin) ? src.heightMin : 0.0;
+      const heightMax = Number.isFinite(src.heightMax) ? src.heightMax : 1.0;
+      const hardMin = Number.isFinite(src.hardnessMin) ? src.hardnessMin : Number.isFinite(src.erodabilityMin) ? src.erodabilityMin : fallback.hardnessMin;
+      const hardMax = Number.isFinite(src.hardnessMax) ? src.hardnessMax : Number.isFinite(src.erodabilityMax) ? src.erodabilityMax : fallback.hardnessMax;
+      return {
+        enabled: !!src.enabled,
+        label: src.label || fallback.label,
+        preset: src.preset || 'custom',
+        heightMin,
+        heightMax,
+        hardnessMin: clamp(Math.min(hardMin, hardMax), 0.0, 1.0),
+        hardnessMax: clamp(Math.max(hardMin, hardMax), 0.0, 1.0),
+        thermalEnabled: src.thermalEnabled !== false,
+      };
+    });
+  }
+
+  #resolveLayerHardnessForTerrain(surfaceArray, offset, terrain, fallbackHardness) {
+    let chosenIndex = -1;
+    let chosenTop = Infinity;
+    let highestTop = -Infinity;
+    let highestIndex = -1;
+
+    for (let layerIndex = 0; layerIndex < 4; layerIndex++) {
+      const matBase = layerIndex * 4;
+      if (this.layerMaterialValues[matBase + 2] < 0.5) continue;
+      const top = surfaceArray[offset + layerIndex];
+      if (!Number.isFinite(top) || top < -1e8) continue;
+      if (top > highestTop) {
+        highestTop = top;
+        highestIndex = layerIndex;
+      }
+      if (top >= terrain && top < chosenTop) {
+        chosenTop = top;
+        chosenIndex = layerIndex;
+      }
+    }
+
+    if (chosenIndex < 0) {
+      chosenIndex = highestIndex;
+      chosenTop = highestTop;
+    }
+    if (chosenIndex < 0 || !Number.isFinite(chosenTop)) {
+      return clamp(fallbackHardness, 0.0, 1.0);
+    }
+
+    let lowerTop = -Infinity;
+    for (let layerIndex = 0; layerIndex < 4; layerIndex++) {
+      const matBase = layerIndex * 4;
+      if (this.layerMaterialValues[matBase + 2] < 0.5) continue;
+      const top = surfaceArray[offset + layerIndex];
+      if (!Number.isFinite(top) || top < -1e8 || top >= chosenTop) continue;
+      if (top > lowerTop) lowerTop = top;
+    }
+
+    let depthT = 0.0;
+    if (Number.isFinite(lowerTop) && lowerTop > -1e8) {
+      depthT = clamp((chosenTop - terrain) / Math.max(chosenTop - lowerTop, 1e-6), 0.0, 1.0);
+    } else if (terrain < chosenTop) {
+      depthT = 1.0;
+    }
+
+    const materialBase = chosenIndex * 4;
+    const hardMin = this.layerMaterialValues[materialBase];
+    const hardMax = this.layerMaterialValues[materialBase + 1];
+    return clamp(hardMin + (hardMax - hardMin) * depthT, 0.0, 1.0);
+  }
+
+  #writeLayerMaterialParams() {
+    if (this.layerMaterialBuffer && this.device) {
+      this.device.queue.writeBuffer(this.layerMaterialBuffer, 0, this.layerMaterialValues);
+    }
   }
 
 
@@ -456,8 +591,11 @@ export default class WebGPUTerrainErosion {
     const springsEnabled = !!this.simulationParams.sourceEnabled;
 
     if (layoutMode === 0) {
-      const points = [];
       const values = this.paintedSpringMap;
+      if (!(values instanceof Float32Array) || values.length !== this.cellCount) {
+        return [];
+      }
+      const points = [];
       const threshold = 0.0025;
       let activeCount = 0;
       for (let i = 0; i < values.length; i++) {
@@ -531,6 +669,11 @@ export default class WebGPUTerrainErosion {
     const mask = raster.mask instanceof Uint8Array && raster.mask.length === width * height
       ? raster.mask
       : null;
+    const rasterBands = Array.isArray(raster.bands) ? raster.bands : null;
+    const layerConfigs = this.#normalizeLayerConfigArray(options);
+    const demSourceMode = options.demSourceMode || options.layerConfig?.mode || 'single';
+    const hasLayerBands = Array.isArray(rasterBands) && rasterBands.some((band) => band instanceof Float32Array && band.length === width * height);
+    const useLayeredDem = hasLayerBands || demSourceMode !== 'single';
 
     this.width = width;
     this.height = height;
@@ -549,18 +692,59 @@ export default class WebGPUTerrainErosion {
     this.#writeParams();
 
     const initialState = new Float32Array(this.cellCount * STATE_FLOATS_PER_CELL);
+    const layerSurfaceValues = useLayeredDem ? new Float32Array(this.cellCount * 4) : null;
+    if (layerSurfaceValues) layerSurfaceValues.fill(-1e9);
     const hardnessBase = this.simulationParams.hardnessBase;
     const hardnessVariation = this.simulationParams.hardnessVariation;
 
+    this.layerMaterialValues.fill(0.0);
+    for (let layerIndex = 0; layerIndex < 4; layerIndex++) {
+      const config = layerConfigs[layerIndex];
+      const base = layerIndex * 4;
+      this.layerMaterialValues[base] = config.hardnessMin;
+      this.layerMaterialValues[base + 1] = config.hardnessMax;
+      const hasBand = !!(rasterBands && rasterBands[layerIndex] instanceof Float32Array && rasterBands[layerIndex].length === this.cellCount);
+      const fallbackSingleLayer = useLayeredDem && !hasLayerBands && layerIndex === 0;
+      this.layerMaterialValues[base + 2] = (config.enabled && (hasBand || fallbackSingleLayer)) ? 1.0 : 0.0;
+      this.layerMaterialValues[base + 3] = config.thermalEnabled ? 1.0 : 0.0;
+    }
+
     for (let i = 0; i < this.cellCount; i++) {
       const base = i * STATE_FLOATS_PER_CELL;
+      const layerBase = i * 4;
       const valid = mask ? (mask[i] ? 1 : 0) : 1;
-      const terrain = minHeight + raster.values[i] * range;
+      const fallbackTerrain = minHeight + raster.values[i] * range;
       const normalizedTerrain = clamp(raster.values[i], 0.0, 1.0);
       const noise = Math.sin(i * 12.9898 + width * 0.031 + height * 0.017) * 43758.5453;
       const frac = noise - Math.floor(noise);
       const noiseTerm = (frac * 2 - 1) * hardnessVariation * 0.25;
-      const hardness = clamp(hardnessBase + (1.0 - normalizedTerrain) * hardnessVariation + noiseTerm, 0.02, 1.0);
+      const fallbackHardness = clamp(hardnessBase + (1.0 - normalizedTerrain) * hardnessVariation + noiseTerm, 0.0, 1.0);
+
+      let terrain = fallbackTerrain;
+      let hardness = fallbackHardness;
+      if (useLayeredDem) {
+        let highestLayerTop = -Infinity;
+        for (let layerIndex = 0; layerIndex < 4; layerIndex++) {
+          const matBase = layerIndex * 4;
+          if (this.layerMaterialValues[matBase + 2] < 0.5) continue;
+          const band = rasterBands && rasterBands[layerIndex] instanceof Float32Array && rasterBands[layerIndex].length === this.cellCount
+            ? rasterBands[layerIndex]
+            : (layerIndex === 0 ? raster.values : null);
+          if (!band) continue;
+          const config = layerConfigs[layerIndex];
+          const normalizedBand = clamp(band[i], 0.0, 1.0);
+          const topHeight = config.heightMin + normalizedBand * (config.heightMax - config.heightMin);
+          layerSurfaceValues[layerBase + layerIndex] = topHeight;
+          if (topHeight > highestLayerTop) highestLayerTop = topHeight;
+        }
+        if (Number.isFinite(highestLayerTop) && highestLayerTop > -1e8) {
+          terrain = highestLayerTop;
+        } else {
+          layerSurfaceValues[layerBase] = terrain;
+          this.layerMaterialValues[2] = 1.0;
+        }
+        hardness = this.#resolveLayerHardnessForTerrain(layerSurfaceValues, layerBase, terrain, fallbackHardness);
+      }
 
       initialState[base] = terrain;
       initialState[base + 1] = 0.0;
@@ -572,16 +756,27 @@ export default class WebGPUTerrainErosion {
       initialState[base + 7] = 0.0;
     }
 
-    const zeros = new Float32Array(this.cellCount * 4);
+    const clearEncoder = this.device.createCommandEncoder({ label: 'paper-reset-sim-scratch' });
+    clearEncoder.clearBuffer(this.fluxBuffer);
+    clearEncoder.clearBuffer(this.velocityBuffer);
+    clearEncoder.clearBuffer(this.thermalPipeBufferA);
+    clearEncoder.clearBuffer(this.thermalPipeBufferB);
+    if (!useLayeredDem) {
+      clearEncoder.clearBuffer(this.layerTopBuffer);
+    }
+    this.device.queue.submit([clearEncoder.finish()]);
     this.device.queue.writeBuffer(this.stateBuffers[0], 0, initialState);
     this.device.queue.writeBuffer(this.stateBuffers[1], 0, initialState);
-    this.device.queue.writeBuffer(this.fluxBuffer, 0, zeros);
-    this.device.queue.writeBuffer(this.velocityBuffer, 0, zeros);
-    this.device.queue.writeBuffer(this.thermalPipeBufferA, 0, zeros);
-    this.device.queue.writeBuffer(this.thermalPipeBufferB, 0, zeros);
+    if (useLayeredDem && layerSurfaceValues) {
+      this.device.queue.writeBuffer(this.layerTopBuffer, 0, layerSurfaceValues);
+    }
+    this.layeredDemEnabled = useLayeredDem;
+    this.layerSurfaceValues = this.layeredDemEnabled && layerSurfaceValues ? layerSurfaceValues : new Float32Array(0);
+    this.#writeLayerMaterialParams();
+    this.layerConfigMode = demSourceMode;
     this.ready = true;
     this.latestReadbackStats = null;
-    this.paintedSpringMap = new Float32Array(this.cellCount);
+    this.paintedSpringMap = new Float32Array(0);
     this.#writeCustomSpringBuffer();
     this.#writeRenderParams();
     this.#ensureDepthTexture();
@@ -602,42 +797,117 @@ export default class WebGPUTerrainErosion {
     this.#writeRenderParams();
   }
 
+  #createStepCommandBuffer(iterations = 1, label = 'paper-erosion-step') {
+    const encoder = this.device.createCommandEncoder({ label });
+    this.#encodeStepCommands(encoder, Math.max(1, iterations | 0));
+    return encoder.finish();
+  }
+
+  #createRenderCommandBuffer(label = 'paper-erosion-render') {
+    this.#ensureDepthTexture();
+    this.#ensureSceneTargets();
+    this.#writeRenderParams();
+    const view = this.context.getCurrentTexture().createView();
+    const encoder = this.device.createCommandEncoder({ label });
+    this.#encodeRenderCommands(encoder, view);
+    return encoder.finish();
+  }
+
+  async #submitForGpuTiming(commandBuffer) {
+    const submitAt = performance.now();
+    this.device.queue.submit([commandBuffer]);
+    await this.device.queue.onSubmittedWorkDone();
+    return Math.max(0, performance.now() - submitAt);
+  }
+
+  async stepBench(iterations = 1) {
+    if (!this.ready) return null;
+    const cpuStartAt = performance.now();
+    const commandBuffer = this.#createStepCommandBuffer(Math.max(1, iterations | 0), 'paper-erosion-step-bench');
+    const cpuMs = Math.max(0, performance.now() - cpuStartAt);
+    const gpuMs = await this.#submitForGpuTiming(commandBuffer);
+    this.#recordErosionPassMs(cpuMs);
+    this.#recordGpuErosionPassMs(gpuMs);
+    return { cpuErosionMs: cpuMs, gpuErosionMs: gpuMs, cpuRenderMs: 0, gpuRenderMs: 0 };
+  }
+
+  async stepAndRenderBench(iterations = 1) {
+    if (!this.ready) return null;
+    const canRender = !!(this.context && this.width >= 2 && this.height >= 2);
+    const erosionCpuStartAt = performance.now();
+    const erosionCommandBuffer = this.#createStepCommandBuffer(Math.max(1, iterations | 0), canRender ? 'paper-erosion-step-bench' : 'paper-erosion-step-render-bench');
+    const cpuErosionMs = Math.max(0, performance.now() - erosionCpuStartAt);
+    const gpuErosionMs = await this.#submitForGpuTiming(erosionCommandBuffer);
+    this.#recordErosionPassMs(cpuErosionMs);
+    this.#recordGpuErosionPassMs(gpuErosionMs);
+    let cpuRenderMs = 0;
+    let gpuRenderMs = 0;
+    if (canRender) {
+      const renderCpuStartAt = performance.now();
+      const renderCommandBuffer = this.#createRenderCommandBuffer('paper-erosion-render-bench');
+      cpuRenderMs = Math.max(0, performance.now() - renderCpuStartAt);
+      gpuRenderMs = await this.#submitForGpuTiming(renderCommandBuffer);
+      this.#recordRenderPassMs(cpuRenderMs);
+      this.#recordGpuRenderPassMs(gpuRenderMs);
+    } else {
+      this.#recordRenderPassMs(0);
+    }
+    return { cpuErosionMs, gpuErosionMs, cpuRenderMs, gpuRenderMs };
+  }
+
   step(iterations = 1) {
     if (!this.ready) return;
-    const encoder = this.device.createCommandEncoder({ label: 'paper-erosion-step' });
-    this.#encodeStepCommands(encoder, Math.max(1, iterations | 0));
-    this.device.queue.submit([encoder.finish()]);
+    const startAt = performance.now();
+    const commandBuffer = this.#createStepCommandBuffer(Math.max(1, iterations | 0), 'paper-erosion-step');
+    this.device.queue.submit([commandBuffer]);
+    this.#recordErosionPassMs(Math.max(0, performance.now() - startAt));
   }
 
   stepAndRender(iterations = 1) {
     if (!this.ready) return;
     const canRender = !!(this.context && this.width >= 2 && this.height >= 2);
     const encoder = this.device.createCommandEncoder({ label: canRender ? 'paper-erosion-step-render' : 'paper-erosion-step' });
+    const erosionStartAt = performance.now();
     this.#encodeStepCommands(encoder, Math.max(1, iterations | 0));
+    const erosionEndAt = performance.now();
+    let renderStartAt = erosionEndAt;
+    let renderEndAt = erosionEndAt;
     if (canRender) {
+      renderStartAt = performance.now();
       this.#ensureDepthTexture();
       this.#ensureSceneTargets();
       this.#writeRenderParams();
       const view = this.context.getCurrentTexture().createView();
       this.#encodeRenderCommands(encoder, view);
+      renderEndAt = performance.now();
     }
+    const submitStartAt = performance.now();
     this.device.queue.submit([encoder.finish()]);
+    const submitMs = performance.now() - submitStartAt;
+    let erosionMs = Math.max(0, erosionEndAt - erosionStartAt);
+    let renderMs = Math.max(0, renderEndAt - renderStartAt);
+    if (canRender && (erosionMs + renderMs) > 1e-6) {
+      const totalMs = erosionMs + renderMs;
+      erosionMs += submitMs * (erosionMs / totalMs);
+      renderMs += submitMs * (renderMs / totalMs);
+    } else {
+      erosionMs += submitMs;
+      renderMs = 0;
+    }
+    this.#recordErosionPassMs(erosionMs);
+    this.#recordRenderPassMs(renderMs);
   }
 
   render() {
     if (!this.ready || !this.context || this.width < 2 || this.height < 2) return;
-    this.#ensureDepthTexture();
-    this.#ensureSceneTargets();
-    this.#writeRenderParams();
-
-    const view = this.context.getCurrentTexture().createView();
-    const encoder = this.device.createCommandEncoder({ label: 'paper-erosion-render' });
-    this.#encodeRenderCommands(encoder, view);
-    this.device.queue.submit([encoder.finish()]);
+    const startAt = performance.now();
+    const commandBuffer = this.#createRenderCommandBuffer('paper-erosion-render');
+    this.device.queue.submit([commandBuffer]);
+    this.#recordRenderPassMs(Math.max(0, performance.now() - startAt));
   }
 
   async readbackStats() {
-    if (!this.ready || !this.readbackBuffer) {
+    if (!this.ready) {
       return this.getStats();
     }
 
@@ -693,7 +963,7 @@ export default class WebGPUTerrainErosion {
   }
 
   async exportTerrainPng() {
-    if (!this.ready || !this.readbackBuffer || this.width <= 0 || this.height <= 0) {
+    if (!this.ready || this.width <= 0 || this.height <= 0) {
       throw new Error('Terrain export is only available after the simulation is initialized.');
     }
     if (typeof OffscreenCanvas !== 'function') {
@@ -754,6 +1024,39 @@ export default class WebGPUTerrainErosion {
     };
   }
 
+
+  #blendAverage(prev, next) {
+    return prev > 0 ? (prev * 0.88 + next * 0.12) : next;
+  }
+
+  #recordErosionPassMs(value) {
+    const ms = Math.max(0, Number(value) || 0);
+    this.lastErosionPassMs = ms;
+    this.lastCpuErosionPassMs = ms;
+    this.avgErosionPassMs = this.#blendAverage(this.avgErosionPassMs, ms);
+    this.avgCpuErosionPassMs = this.#blendAverage(this.avgCpuErosionPassMs, ms);
+  }
+
+  #recordRenderPassMs(value) {
+    const ms = Math.max(0, Number(value) || 0);
+    this.lastRenderPassMs = ms;
+    this.lastCpuRenderPassMs = ms;
+    this.avgRenderPassMs = this.#blendAverage(this.avgRenderPassMs, ms);
+    this.avgCpuRenderPassMs = this.#blendAverage(this.avgCpuRenderPassMs, ms);
+  }
+
+  #recordGpuErosionPassMs(value) {
+    const ms = Math.max(0, Number(value) || 0);
+    this.lastGpuErosionPassMs = ms;
+    this.avgGpuErosionPassMs = this.#blendAverage(this.avgGpuErosionPassMs, ms);
+  }
+
+  #recordGpuRenderPassMs(value) {
+    const ms = Math.max(0, Number(value) || 0);
+    this.lastGpuRenderPassMs = ms;
+    this.avgGpuRenderPassMs = this.#blendAverage(this.avgGpuRenderPassMs, ms);
+  }
+
   getStats() {
     const simTime = this.iterationCount * this.simulationParams.timeStep;
     const rainDuration = Math.max(0, this.simulationParams.rainDuration ?? 0);
@@ -767,6 +1070,21 @@ export default class WebGPUTerrainErosion {
       simTime,
       rainActive,
       rainDuration,
+      layeredDemEnabled: this.layeredDemEnabled,
+      layerConfigMode: this.layerConfigMode,
+      activeLayerCount: [0, 1, 2, 3].reduce((sum, layerIndex) => sum + (this.layerMaterialValues[layerIndex * 4 + 2] > 0.5 ? 1 : 0), 0),
+      lastErosionPassMs: this.lastErosionPassMs,
+      lastRenderPassMs: this.lastRenderPassMs,
+      avgErosionPassMs: this.avgErosionPassMs,
+      avgRenderPassMs: this.avgRenderPassMs,
+      lastCpuErosionPassMs: this.lastCpuErosionPassMs,
+      lastCpuRenderPassMs: this.lastCpuRenderPassMs,
+      avgCpuErosionPassMs: this.avgCpuErosionPassMs,
+      avgCpuRenderPassMs: this.avgCpuRenderPassMs,
+      lastGpuErosionPassMs: this.lastGpuErosionPassMs,
+      lastGpuRenderPassMs: this.lastGpuRenderPassMs,
+      avgGpuErosionPassMs: this.avgGpuErosionPassMs,
+      avgGpuRenderPassMs: this.avgGpuRenderPassMs,
       ...(this.latestReadbackStats ?? {}),
     };
   }
@@ -834,6 +1152,7 @@ export default class WebGPUTerrainErosion {
 
 
   async #readbackStateData() {
+    this.#ensureReadbackBuffer();
     const encoder = this.device.createCommandEncoder({ label: 'paper-erosion-readback' });
     encoder.copyBufferToBuffer(this.stateBuffers[0], 0, this.readbackBuffer, 0, this.stateByteLength);
     this.device.queue.submit([encoder.finish()]);
@@ -846,15 +1165,17 @@ export default class WebGPUTerrainErosion {
   }
 
   #ensureCustomSpringBuffer() {
-    if (!this.device || this.customSpringBuffer) return;
+    if (!this.device) return;
     const size = Math.max(4, this.cellCount * 4);
+    if (this.customSpringBuffer && this.allocatedPaintedSpringByteLength === size) return;
+    this.customSpringBuffer?.destroy?.();
     this.customSpringBuffer = this.device.createBuffer({
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       label: 'paper-painted-springs',
     });
     this.allocatedPaintedSpringByteLength = size;
-    this.#writeCustomSpringBuffer();
+    this.#clearCustomSpringBuffer();
   }
 
   #writeCustomSpringBuffer() {
@@ -862,9 +1183,38 @@ export default class WebGPUTerrainErosion {
     this.#ensureCustomSpringBuffer();
     if (!this.customSpringBuffer) return;
     if (!(this.paintedSpringMap instanceof Float32Array) || this.paintedSpringMap.length !== this.cellCount) {
-      this.paintedSpringMap = new Float32Array(this.cellCount);
+      this.#clearCustomSpringBuffer();
+      return;
     }
     this.device.queue.writeBuffer(this.customSpringBuffer, 0, this.paintedSpringMap);
+  }
+
+
+  #ensureReadbackBuffer() {
+    if (!this.device) return;
+    if (this.readbackBuffer && this.allocatedReadbackByteLength === this.stateByteLength) return;
+    this.readbackBuffer?.destroy?.();
+    this.readbackBuffer = this.device.createBuffer({
+      size: this.stateByteLength,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      label: 'paper-readback',
+    });
+    this.allocatedReadbackByteLength = this.stateByteLength;
+  }
+
+  #ensurePaintedSpringMap() {
+    if (!(this.paintedSpringMap instanceof Float32Array) || this.paintedSpringMap.length !== this.cellCount) {
+      this.paintedSpringMap = new Float32Array(this.cellCount);
+    }
+  }
+
+  #clearCustomSpringBuffer() {
+    if (!this.device) return;
+    this.#ensureCustomSpringBuffer();
+    if (!this.customSpringBuffer) return;
+    const encoder = this.device.createCommandEncoder({ label: 'paper-clear-painted-springs' });
+    encoder.clearBuffer(this.customSpringBuffer);
+    this.device.queue.submit([encoder.finish()]);
   }
 
 
@@ -1100,7 +1450,7 @@ export default class WebGPUTerrainErosion {
       !this.velocityBuffer ||
       !this.thermalPipeBufferA ||
       !this.thermalPipeBufferB ||
-      !this.readbackBuffer ||
+      !this.layerTopBuffer ||
       this.allocatedStateByteLength !== this.stateByteLength ||
       this.allocatedVec4ByteLength !== this.vec4ByteLength;
 
@@ -1112,7 +1462,9 @@ export default class WebGPUTerrainErosion {
       this.thermalPipeBufferB?.destroy?.();
       this.readbackBuffer?.destroy?.();
       this.customSpringBuffer?.destroy?.();
+      this.layerTopBuffer?.destroy?.();
       this.customSpringBuffer = null;
+      this.layerTopBuffer = null;
 
       this.stateBuffers = [0, 1].map((index) => this.device.createBuffer({
         size: this.stateByteLength,
@@ -1144,12 +1496,14 @@ export default class WebGPUTerrainErosion {
         label: 'paper-thermal-pipes-b',
       });
 
-      this.readbackBuffer = this.device.createBuffer({
-        size: this.stateByteLength,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        label: 'paper-readback',
+      this.layerTopBuffer = this.device.createBuffer({
+        size: this.vec4ByteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: 'paper-layer-top-heights',
       });
 
+      this.readbackBuffer = null;
+      this.allocatedReadbackByteLength = 0;
       this.allocatedStateByteLength = this.stateByteLength;
       this.allocatedVec4ByteLength = this.vec4ByteLength;
       this.#rebuildBindGroups();
@@ -1195,13 +1549,13 @@ export default class WebGPUTerrainErosion {
     target[27] = this.simulationParams.sourceTimeOffset;
 
     target[28] = this.simulationParams.historyDecay;
-    target[29] = 0.02;
+    target[29] = 1e-6;
     target[30] = 0.0;
     target[31] = 4.0;
     target[32] = Math.floor(this.simulationParams.sourceSeed ?? 1);
     target[33] = this.simulationParams.metersPerPixel ?? 100;
     target[34] = this.simulationParams.hydraulicErosionEnabled ? 1.0 : 0.0;
-    target[35] = 0.0;
+    target[35] = Math.max(0.0, this.simulationParams.edgeWaterFloor ?? 0.0);
     return target;
   }
 
@@ -1288,6 +1642,8 @@ export default class WebGPUTerrainErosion {
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
 
@@ -1426,7 +1782,7 @@ export default class WebGPUTerrainErosion {
     this.#ensureDummySceneTexture();
     this.#ensureCustomSpringBuffer();
     this.#ensureStepParamBuffer(1);
-    if (!this.dummySceneView || !this.stepParamBuffer || !this.customSpringBuffer) {
+    if (!this.dummySceneView || !this.stepParamBuffer || !this.customSpringBuffer || !this.layerTopBuffer || !this.layerMaterialBuffer) {
       return;
     }
 
@@ -1442,6 +1798,8 @@ export default class WebGPUTerrainErosion {
         { binding: 5, resource: { buffer: this.thermalPipeBufferA } },
         { binding: 6, resource: { buffer: this.thermalPipeBufferB } },
         { binding: 7, resource: { buffer: this.customSpringBuffer } },
+        { binding: 8, resource: { buffer: this.layerTopBuffer } },
+        { binding: 9, resource: { buffer: this.layerMaterialBuffer } },
       ],
     });
 
@@ -1457,6 +1815,8 @@ export default class WebGPUTerrainErosion {
         { binding: 5, resource: { buffer: this.thermalPipeBufferA } },
         { binding: 6, resource: { buffer: this.thermalPipeBufferB } },
         { binding: 7, resource: { buffer: this.customSpringBuffer } },
+        { binding: 8, resource: { buffer: this.layerTopBuffer } },
+        { binding: 9, resource: { buffer: this.layerMaterialBuffer } },
       ],
     });
 
@@ -1530,6 +1890,10 @@ struct FloatBuffer {
   values: array<f32>,
 }
 
+struct LayerMaterialParams {
+  layers: array<vec4<f32>, 4>,
+}
+
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read> srcState: StateBuffer;
 @group(0) @binding(2) var<storage, read_write> dstState: StateBuffer;
@@ -1538,6 +1902,8 @@ struct FloatBuffer {
 @group(0) @binding(5) var<storage, read_write> thermalPipeA: Vec4Buffer;
 @group(0) @binding(6) var<storage, read_write> thermalPipeB: Vec4Buffer;
 @group(0) @binding(7) var<storage, read> paintedSourceState: FloatBuffer;
+@group(0) @binding(8) var<storage, read> layerTopState: Vec4Buffer;
+@group(0) @binding(9) var<uniform> layerMaterials: LayerMaterialParams;
 
 fn gridWidth() -> u32 { return u32(params.dims.x); }
 fn gridHeight() -> u32 { return u32(params.dims.y); }
@@ -1583,6 +1949,74 @@ fn totalHeight(cell: CellState) -> f32 { return cell.terrain + cell.water; }
 fn finiteOr(value: f32, fallback: f32) -> f32 {
   if (value == value && abs(value) < 1e30) { return value; }
   return fallback;
+}
+
+fn resolveMaterialInfo(i: u32, terrain: f32) -> vec4<f32> {
+  let tops = layerTopState.values[i];
+  var chosenIndex: u32 = 0u;
+  var foundChoice = false;
+  var bestAbove = 1e30;
+  var highestTop = -1e30;
+  var highestIndex: u32 = 0u;
+
+  for (var layerIndex: u32 = 0u; layerIndex < 4u; layerIndex = layerIndex + 1u) {
+    let material = layerMaterials.layers[layerIndex];
+    if (material.z < 0.5) { continue; }
+    let top = tops[layerIndex];
+    if (!(top > -1e8)) { continue; }
+    if (top > highestTop) {
+      highestTop = top;
+      highestIndex = layerIndex;
+    }
+    if (top >= terrain && top < bestAbove) {
+      bestAbove = top;
+      chosenIndex = layerIndex;
+      foundChoice = true;
+    }
+  }
+
+  if (!foundChoice) {
+    if (!(highestTop > -1e8)) {
+      return vec4<f32>(-1.0, 1.0, -1.0, 0.0);
+    }
+    chosenIndex = highestIndex;
+  }
+
+  let chosenTop = tops[chosenIndex];
+  var lowerTop = -1e30;
+  for (var layerIndex: u32 = 0u; layerIndex < 4u; layerIndex = layerIndex + 1u) {
+    let material = layerMaterials.layers[layerIndex];
+    if (material.z < 0.5) { continue; }
+    let top = tops[layerIndex];
+    if (!(top > -1e8) || top >= chosenTop) { continue; }
+    if (top > lowerTop) { lowerTop = top; }
+  }
+
+  var depthT = 0.0;
+  if (lowerTop > -1e8) {
+    depthT = clamp((chosenTop - terrain) / max(chosenTop - lowerTop, 1e-6), 0.0, 1.0);
+  } else if (terrain < chosenTop) {
+    depthT = 1.0;
+  }
+
+  let selectedMaterial = layerMaterials.layers[chosenIndex];
+  return vec4<f32>(clamp(mix(selectedMaterial.x, selectedMaterial.y, depthT), 0.0, 1.0), selectedMaterial.w, f32(chosenIndex), depthT);
+}
+
+fn resolveMaterialHardness(i: u32, terrain: f32, fallbackHardness: f32) -> f32 {
+  let info = resolveMaterialInfo(i, terrain);
+  if (info.z < 0.0) {
+    return clamp(fallbackHardness, 0.0, 1.0);
+  }
+  return info.x;
+}
+
+fn resolveMaterialThermalEnabled(i: u32, terrain: f32) -> bool {
+  let info = resolveMaterialInfo(i, terrain);
+  if (info.z < 0.0) {
+    return true;
+  }
+  return info.y >= 0.5;
 }
 
 fn terrainNormal(x: i32, y: i32) -> vec3<f32> {
@@ -1704,7 +2138,8 @@ fn fluxMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let bottomCell = readStateClamped(x, y + 1);
 
   let edgeDrain = max(params.render0.w, 0.0);
-  let outsideTotal = -edgeDrain;
+  let retainedEdgeWater = max(params.source2.w, 0.0);
+  let outsideTotal = select(centerTotal, cell.terrain + retainedEdgeWater - edgeDrain, rainWater > retainedEdgeWater + 1e-6);
   let leftTotal = select(outsideTotal, leftCell.terrain + leftCell.water + dt * rainAmountAt(u32(max(x - 1, 0)), gid.y), inBounds(x - 1, y));
   let rightTotal = select(outsideTotal, rightCell.terrain + rightCell.water + dt * rainAmountAt(u32(min(x + 1, i32(gridWidth()) - 1)), gid.y), inBounds(x + 1, y));
   let topTotal = select(outsideTotal, topCell.terrain + topCell.water + dt * rainAmountAt(gid.x, u32(max(y - 1, 0))), inBounds(x, y - 1));
@@ -1729,6 +2164,20 @@ fn fluxMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let maxOut = finiteOr(rainWater * cellArea() / max(dt, 1e-6), 0.0);
   if (sumOut > maxOut && sumOut > 1e-6) {
     nextFlux *= maxOut / sumOut;
+  }
+
+  let maxOutsideOut = max(rainWater - retainedEdgeWater, 0.0) * cellArea() / max(dt, 1e-6);
+  let outsideFluxX = select(0.0, nextFlux.x, !inBounds(x - 1, y));
+  let outsideFluxY = select(0.0, nextFlux.y, !inBounds(x + 1, y));
+  let outsideFluxZ = select(0.0, nextFlux.z, !inBounds(x, y - 1));
+  let outsideFluxW = select(0.0, nextFlux.w, !inBounds(x, y + 1));
+  let sumOutsideOut = outsideFluxX + outsideFluxY + outsideFluxZ + outsideFluxW;
+  if (sumOutsideOut > maxOutsideOut && sumOutsideOut > 1e-6) {
+    let outsideScale = maxOutsideOut / sumOutsideOut;
+    if (!inBounds(x - 1, y)) { nextFlux.x *= outsideScale; }
+    if (!inBounds(x + 1, y)) { nextFlux.y *= outsideScale; }
+    if (!inBounds(x, y - 1)) { nextFlux.z *= outsideScale; }
+    if (!inBounds(x, y + 1)) { nextFlux.w *= outsideScale; }
   }
   nextFlux *= max(0.0, 1.0 - params.misc0.z * dt);
   fluxState.values[i] = vec4<f32>(
@@ -1786,7 +2235,8 @@ fn flowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   velocityState.values[i] = vec4<f32>(finiteOr(vel.x, 0.0), finiteOr(vel.y, 0.0), finiteOr(speed, 0.0), 0.0);
 
-  dstState.cells[i] = CellState(finiteOr(cell.terrain, 0.0), finiteOr(water, 0.0), finiteOr(cell.sediment, 0.0), finiteOr(cell.hardness, 0.1), cell.mask, 0.0, 0.0, finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, 0.1));
+  dstState.cells[i] = CellState(finiteOr(cell.terrain, 0.0), finiteOr(water, 0.0), finiteOr(cell.sediment, 0.0), activeHardness, cell.mask, 0.0, 0.0, finiteOr(cell.aux2, 0.0));
 }
 
 fn terrainNeighborMean(x: i32, y: i32, center: f32) -> f32 {
@@ -1836,23 +2286,24 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   );
   let flow3Dir = flow3 / max(length(flow3), 1e-6);
   let collisionTerm = select(0.0, max(dot(-n, flow3Dir), 0.0), speed > 1e-6);
-  let capacityTerm = max(max(collisionTerm, sinAlpha * 0.2), 0.05);
+  let capacityTerm = max(max(collisionTerm * 0.80, sinAlpha * 0.12), 0.03);
   let capacity = finiteOr(params.hydro1.x * capacityTerm * speed * depthLimiter(cell.water), 0.0);
 
   var terrain = cell.terrain;
   var water = cell.water;
   var sediment = cell.sediment;
-  var hardness = cell.hardness;
+  var hardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, params.misc0.y));
 
   var history = finiteOr(cell.aux2, 0.0) * params.misc0.x;
 
   if (!hydraulicErosionEnabled()) {
-    dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y), cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(cell.aux2, 0.0));
+    let preservedHardness = resolveMaterialHardness(i, clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y));
+    dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), preservedHardness, cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(cell.aux2, 0.0));
     return;
   }
 
   if (capacity > sediment && water > 1e-6) {
-    let erodeAmount = timeStep() * max(hardness, 0.02) * params.hydro1.y * (capacity - sediment);
+    let erodeAmount = timeStep() * max(hardness, 1e-6) * params.hydro1.y * (capacity - sediment);
     let clampedErode = min(min(erodeAmount, max(water, 0.0)), max(terrain, 0.0));
     terrain = max(0.0, terrain - clampedErode);
     sediment += clampedErode;
@@ -1860,7 +2311,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     history -= clampedErode * 240.0;
   } else if (sediment > capacity) {
     let sedimentExcess = sediment - capacity;
-    let depositAmount = timeStep() * params.hydro1.z * sedimentExcess;
+    let depositAmount = timeStep() * params.hydro1.z * sedimentExcess * 1.12;
     let neighborMean = terrainNeighborMean(x, y, terrain);
     let localCeiling = max(terrain + 0.001, neighborMean + params.thermal0.w * 0.9 + max(cell.water, 0.0) * 0.08);
     let spikeGuard = max(0.0, localCeiling - terrain);
@@ -1868,7 +2319,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     terrain += clampedDeposit;
     sediment -= clampedDeposit;
     water = max(0.0, water - clampedDeposit);
-    hardness = max(params.misc0.y, hardness - timeStep() * params.hydro1.w * params.hydro1.y * sedimentExcess);
+    hardness = max(0.0, hardness - timeStep() * params.hydro1.w * params.hydro1.y * sedimentExcess * 0.75);
     history += clampedDeposit * 180.0;
   }
 
@@ -1876,6 +2327,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   terrain = clamp(terrain, 0.0, 2.0);
   water = clamp(water, 0.0, 2.0);
   sediment = clamp(sediment, 0.0, 2.0);
+  hardness = resolveMaterialHardness(i, terrain, finiteOr(hardness, params.misc0.y));
   dstState.cells[i] = CellState(finiteOr(terrain, 0.0), finiteOr(water, 0.0), finiteOr(sediment, 0.0), finiteOr(hardness, params.misc0.y), cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(history, 0.0));
 }
 
@@ -1898,7 +2350,8 @@ fn transportMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let preservedSediment = clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0);
   let water = clamp(max(0.0, finiteOr(cell.water, 0.0) * (1.0 - params.hydro0.y * timeStep())), 0.0, 2.0);
   let nextSediment = select(transportedSediment, preservedSediment, !hydraulicErosionEnabled());
-  dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), water, nextSediment, finiteOr(cell.hardness, params.misc0.y), cell.mask, cell.aux0, cell.aux1, finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y));
+  dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), water, nextSediment, activeHardness, cell.mask, cell.aux0, cell.aux1, finiteOr(cell.aux2, 0.0));
 }
 
 @compute @workgroup_size(8, 8)
@@ -1915,8 +2368,15 @@ fn thermalOutflowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let x = i32(gid.x);
   let y = i32(gid.y);
-  let softness = clamp(0.30 + max(cell.hardness, 0.02) * 1.35, 0.20, 1.20);
-  let thresholdBase = max(params.thermal0.w * 0.5, params.thermal0.z * max(cell.hardness, 0.02) * 0.55 + params.thermal0.w * 0.35);
+  let activeHardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, params.misc0.y));
+  let thermalAllowed = resolveMaterialThermalEnabled(i, finiteOr(cell.terrain, 0.0));
+  if (!thermalAllowed || params.thermal0.y <= 1e-6) {
+    thermalPipeA.values[i] = vec4<f32>(0.0);
+    thermalPipeB.values[i] = vec4<f32>(0.0);
+    return;
+  }
+  let softness = clamp(0.20 + max(activeHardness, 0.0) * 0.85, 0.08, 0.85);
+  let thresholdBase = max(params.thermal0.w * 0.7, params.thermal0.z * max(activeHardness, 0.0) * 0.75 + params.thermal0.w * 0.55);
 
   var rawCard = vec4<f32>(0.0);
   var rawDiag = vec4<f32>(0.0);
@@ -1977,7 +2437,7 @@ fn thermalOutflowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let totalOut = min(cell.terrain, cellArea() * timeStep() * params.thermal0.y * softness * maxExcess * 1.35);
+  let totalOut = min(cell.terrain, cellArea() * timeStep() * params.thermal0.y * softness * maxExcess * 0.72);
   thermalPipeA.values[i] = rawCard * (totalOut / weightSum);
   thermalPipeB.values[i] = rawDiag * (totalOut / weightSum);
 }
@@ -2010,7 +2470,8 @@ fn thermalApplyMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     readThermalBOrZero(x + 1, y + 1).x;
 
   let terrain = clamp(max(0.0, finiteOr(cell.terrain, 0.0) - finiteOr(selfOut, 0.0) + finiteOr(incoming, 0.0)), 0.0, 2.0);
-  dstState.cells[i] = CellState(terrain, clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y), cell.mask, finiteOr(selfOut, 0.0), finiteOr(incoming, 0.0), finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, terrain, finiteOr(cell.hardness, params.misc0.y));
+  dstState.cells[i] = CellState(terrain, clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), activeHardness, cell.mask, finiteOr(selfOut, 0.0), finiteOr(incoming, 0.0), finiteOr(cell.aux2, 0.0));
 }
 
 `;
@@ -2422,6 +2883,60 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
     let depositionColor = vec3<f32>(0.08, 0.95, 0.20);
     let diagColor = select(mix(terrainColor * 0.18, depositionColor, mag), mix(terrainColor * 0.18, erosionColor, mag), signedHistory < 0.0);
     return vec4<f32>(diagColor, 1.0);
+  }
+  if (mode == 7) {
+    let signedHistory = clamp(in.history, -1.0, 1.0);
+    let erosion = smoothstep(0.02, 0.72, max(-signedHistory, 0.0));
+    let deposition = smoothstep(0.02, 0.72, max(signedHistory, 0.0));
+    let thermal = clamp(in.thermal, 0.0, 1.0);
+    let steepness = pow(1.0 - clamp(terrainNormal.y, 0.0, 1.0), 0.68);
+    let lowland = 1.0 - smoothstep(0.14, 0.60, h);
+    let waterPresence = smoothstep(0.0, 0.05, in.water);
+    let lowElevationMarine = (1.0 - smoothstep(0.05, 0.30, h)) * mix(0.40, 1.0, waterPresence);
+    let shoalBand = smoothstep(0.03, 0.15, h) * (1.0 - smoothstep(0.15, 0.30, h));
+    let beachBand = smoothstep(0.10, 0.23, h) * (1.0 - smoothstep(0.23, 0.40, h));
+    let settledActivity = clamp(deposition * (0.70 + 0.35 * lowland) + thermal * (0.34 + 0.18 * lowland), 0.0, 1.0);
+
+    var natural = mix(vec3<f32>(0.18, 0.24, 0.15), vec3<f32>(0.42, 0.38, 0.22), smoothstep(0.10, 0.52, h));
+    natural = mix(natural, vec3<f32>(0.68, 0.61, 0.50), smoothstep(0.56, 0.96, h));
+
+    let soilColor = mix(vec3<f32>(0.22, 0.50, 0.20), vec3<f32>(0.52, 0.46, 0.24), smoothstep(0.18, 0.82, h));
+    let fertileLowlandColor = vec3<f32>(0.18, 0.56, 0.20);
+    let riparianColor = vec3<f32>(0.12, 0.48, 0.22);
+    let alluviumColor = mix(vec3<f32>(0.54, 0.58, 0.20), vec3<f32>(0.82, 0.66, 0.28), smoothstep(0.22, 0.72, h));
+    let colluviumColor = vec3<f32>(0.58, 0.46, 0.28);
+    let rockColor = mix(vec3<f32>(0.30, 0.28, 0.25), vec3<f32>(0.78, 0.74, 0.68), smoothstep(0.24, 0.92, steepness));
+    let deepMarineColor = vec3<f32>(0.01, 0.12, 0.56);
+    let shallowMarineColor = vec3<f32>(0.04, 0.90, 0.96);
+    let shoalOrangeColor = vec3<f32>(1.00, 0.62, 0.06);
+    let marineColor = mix(deepMarineColor, shallowMarineColor, smoothstep(0.03, 0.18, h));
+
+    let soilBuild = clamp(deposition * (0.68 + 0.30 * lowland) + thermal * 0.20 - steepness * 0.24, 0.0, 1.0);
+    let alluvium = clamp(deposition * (0.54 + 0.42 * lowland) + thermal * 0.14, 0.0, 1.0);
+    let colluvium = clamp(thermal * (0.52 + 0.60 * steepness) + deposition * 0.18, 0.0, 1.0);
+    let exposedRock = clamp(erosion * 0.94 + steepness * 0.54 - deposition * 0.26, 0.0, 1.0);
+    let fertilePlain = clamp(settledActivity * lowland * (1.0 - steepness) * (1.0 - 0.45 * waterPresence), 0.0, 1.0);
+    let riparian = clamp((0.24 + 0.76 * settledActivity) * lowland * (1.0 - steepness) * smoothstep(0.0, 0.10, in.water), 0.0, 1.0);
+    let foothillGreen = clamp(settledActivity * (1.0 - lowland) * (1.0 - steepness) * 0.34, 0.0, 1.0);
+
+    natural = mix(natural, marineColor, lowElevationMarine * 0.82);
+    natural = mix(natural, shoalOrangeColor, shoalBand * (0.18 + 0.16 * lowland + 0.10 * deposition));
+    natural = mix(natural, shoalOrangeColor * vec3<f32>(1.0, 0.90, 0.68), beachBand * (0.10 + 0.08 * deposition));
+    natural = mix(natural, soilColor, soilBuild * 0.58);
+    natural = mix(natural, alluviumColor, alluvium * 0.44);
+    natural = mix(natural, colluviumColor, colluvium * 0.38);
+    natural = mix(natural, fertileLowlandColor, fertilePlain * 0.74);
+    natural = mix(natural, riparianColor, riparian * 0.62);
+    natural = mix(natural, vec3<f32>(0.38, 0.54, 0.26), foothillGreen * 0.24);
+    natural = mix(natural, rockColor, exposedRock);
+
+    let matteLambert = 0.60 + 0.28 * lambert + 0.22 * hemi;
+    let microContour = 0.95 + 0.05 * abs(sin(h * 30.0 + signedHistory * 8.0 + thermal * 6.0));
+    var naturalColor = clamp(natural * matteLambert * microContour, vec3<f32>(0.0), vec3<f32>(1.0));
+    let luma = dot(naturalColor, vec3<f32>(0.299, 0.587, 0.114));
+    naturalColor = mix(vec3<f32>(luma), naturalColor, 1.18);
+    naturalColor = pow(clamp(naturalColor, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.94));
+    return vec4<f32>(clamp(naturalColor, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
   }
 
   return vec4<f32>(terrainColor, 1.0);

@@ -9,6 +9,7 @@ let lastFrameAt = 0;
 let lastFrameMs = 0;
 let lastStatusPostAt = 0;
 let lastRenderAt = 0;
+let lastGpuBenchAt = 0;
 let loopIterationsPerFrame = 5;
 let simulationParams = {};
 let sourceRaster = null;
@@ -113,9 +114,18 @@ async function frame(now) {
     const iterations = Math.max(1, loopIterationsPerFrame | 0);
     const renderIntervalMs = getLoopRenderIntervalMs();
     const shouldRender = renderIntervalMs <= 0 || lastRenderAt <= 0 || (now - lastRenderAt) >= renderIntervalMs;
+    const shouldBenchmarkGpu = lastGpuBenchAt <= 0 || (now - lastGpuBenchAt) >= 1000;
     if (shouldRender) {
-      currentGpu.stepAndRender(iterations);
+      if (shouldBenchmarkGpu) {
+        await currentGpu.stepAndRenderBench(iterations);
+        lastGpuBenchAt = now;
+      } else {
+        currentGpu.stepAndRender(iterations);
+      }
       lastRenderAt = now;
+    } else if (shouldBenchmarkGpu) {
+      await currentGpu.stepBench(iterations);
+      lastGpuBenchAt = now;
     } else {
       currentGpu.step(iterations);
     }
@@ -150,7 +160,7 @@ function replyError(requestId, error) {
   });
 }
 
-async function buildNormalizedRasterFromBlob(blob) {
+async function buildRasterFromBlob(blob, mode = 'single') {
   if (!(blob instanceof Blob)) {
     throw new Error('DEM image payload must be a Blob or File.');
   }
@@ -159,13 +169,13 @@ async function buildNormalizedRasterFromBlob(blob) {
   }
   const bitmap = await createImageBitmap(blob, { imageOrientation: 'none' });
   try {
-    return await buildNormalizedRasterFromBitmap(bitmap);
+    return await buildRasterFromBitmap(bitmap, mode);
   } finally {
     bitmap.close?.();
   }
 }
 
-async function buildNormalizedRasterFromBitmap(bitmap) {
+async function buildRasterFromBitmap(bitmap, mode = 'single') {
   const width = bitmap.width | 0;
   const height = bitmap.height | 0;
   const canvas = new OffscreenCanvas(width, height);
@@ -179,15 +189,64 @@ async function buildNormalizedRasterFromBitmap(bitmap) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const imageData = ctx.getImageData(0, 0, width, height);
   const rgba = imageData.data;
-  const values = new Float32Array(width * height);
-  const mask = new Uint8Array(width * height);
+  const count = width * height;
+  const packedRgba = mode === 'packed_rgba';
+  const mask = new Uint8Array(count);
 
-  for (let i = 0, j = 0; i < values.length; i++, j += 4) {
+  if (packedRgba) {
+    const bands = [new Float32Array(count), new Float32Array(count), new Float32Array(count), new Float32Array(count)];
+    const values = bands[0];
+    for (let i = 0, j = 0; i < count; i++, j += 4) {
+      values[i] = rgba[j] / 255;
+      bands[1][i] = rgba[j + 1] / 255;
+      bands[2][i] = rgba[j + 2] / 255;
+      bands[3][i] = rgba[j + 3] / 255;
+      mask[i] = 1;
+    }
+    return { width, height, values, mask, bands };
+  }
+
+  const values = new Float32Array(count);
+  for (let i = 0, j = 0; i < count; i++, j += 4) {
     values[i] = (rgba[j] + rgba[j + 1] + rgba[j + 2]) / (3 * 255);
     mask[i] = rgba[j + 3] === 0 ? 0 : 1;
   }
 
-  return { width, height, values, mask };
+  return { width, height, values, mask, bands: null };
+}
+
+async function buildStackedLayerRasterFromBlobs(layerBlobs = []) {
+  const firstIndex = layerBlobs.findIndex(Boolean);
+  if (firstIndex < 0) {
+    throw new Error('Layer stack mode requires at least one layer PNG.');
+  }
+
+  const first = await buildRasterFromBlob(layerBlobs[firstIndex], 'single');
+  const width = first.width | 0;
+  const height = first.height | 0;
+  const count = width * height;
+  const bands = [new Float32Array(count), new Float32Array(count), new Float32Array(count), new Float32Array(count)];
+  const values = bands[0];
+  const mask = first.mask instanceof Uint8Array && first.mask.length === count ? first.mask.slice(0) : new Uint8Array(count).fill(1);
+  bands[firstIndex].set(first.values);
+  releaseRaster(first);
+
+  for (let layerIndex = 0; layerIndex < 4; layerIndex++) {
+    if (layerIndex === firstIndex || !layerBlobs[layerIndex]) continue;
+    const layer = await buildRasterFromBlob(layerBlobs[layerIndex], 'single');
+    if (layer.width !== width || layer.height !== height) {
+      throw new Error('All layer PNGs in stack mode must have the same dimensions.');
+    }
+    bands[layerIndex].set(layer.values);
+    if (layer.mask instanceof Uint8Array && layer.mask.length === count) {
+      for (let i = 0; i < count; i++) {
+        mask[i] = mask[i] && layer.mask[i] ? 1 : 0;
+      }
+    }
+    releaseRaster(layer);
+  }
+
+  return { width, height, values, mask, bands };
 }
 
 function resampleRasterBilinear(raster, scale) {
@@ -198,12 +257,14 @@ function resampleRasterBilinear(raster, scale) {
   const srcHeight = raster.height | 0;
   const dstWidth = Math.max(1, ((srcWidth - 1) * safeScale) + 1);
   const dstHeight = Math.max(1, ((srcHeight - 1) * safeScale) + 1);
-  const dstValues = new Float32Array(dstWidth * dstHeight);
   const dstMask = new Uint8Array(dstWidth * dstHeight);
   const srcValues = raster.values;
   const srcMask = raster.mask instanceof Uint8Array ? raster.mask : null;
+  const srcBands = Array.isArray(raster.bands) ? raster.bands : null;
+  const dstBands = srcBands ? srcBands.map(() => new Float32Array(dstWidth * dstHeight)) : null;
+  const dstValues = dstBands ? dstBands[0] : new Float32Array(dstWidth * dstHeight);
 
-  function sampleValue(px, py) {
+  function sampleArray(srcArray, px, py) {
     const x0 = Math.floor(px);
     const y0 = Math.floor(py);
     const x1 = Math.min(x0 + 1, srcWidth - 1);
@@ -214,10 +275,10 @@ function resampleRasterBilinear(raster, scale) {
     const i10 = y0 * srcWidth + x1;
     const i01 = y1 * srcWidth + x0;
     const i11 = y1 * srcWidth + x1;
-    const v00 = srcValues[i00];
-    const v10 = srcValues[i10];
-    const v01 = srcValues[i01];
-    const v11 = srcValues[i11];
+    const v00 = srcArray[i00];
+    const v10 = srcArray[i10];
+    const v01 = srcArray[i01];
+    const v11 = srcArray[i11];
     const a = v00 + (v10 - v00) * tx;
     const b = v01 + (v11 - v01) * tx;
     return a + (b - a) * ty;
@@ -249,12 +310,24 @@ function resampleRasterBilinear(raster, scale) {
     for (let x = 0; x < dstWidth; x++) {
       const srcX = x / safeScale;
       const dstIndex = y * dstWidth + x;
-      dstValues[dstIndex] = sampleValue(srcX, srcY);
+      dstValues[dstIndex] = sampleArray(srcValues, srcX, srcY);
       dstMask[dstIndex] = sampleMask(srcX, srcY);
+      if (dstBands && srcBands) {
+        for (let bandIndex = 1; bandIndex < dstBands.length; bandIndex++) {
+          dstBands[bandIndex][dstIndex] = sampleArray(srcBands[bandIndex], srcX, srcY);
+        }
+      }
     }
   }
 
-  return { width: dstWidth, height: dstHeight, values: dstValues, mask: dstMask };
+  return { width: dstWidth, height: dstHeight, values: dstValues, mask: dstMask, bands: dstBands };
+}
+
+function releaseRaster(raster) {
+  if (!raster) return;
+  raster.values = null;
+  raster.mask = null;
+  raster.bands = null;
 }
 
 async function loadRasterIntoGpu(message) {
@@ -262,18 +335,27 @@ async function loadRasterIntoGpu(message) {
   if (Object.keys(simulationParams).length > 0) {
     currentGpu.setSimulationParams(simulationParams);
   }
-  if (message.blob) {
-    sourceRaster = await buildNormalizedRasterFromBlob(message.blob);
-    sourceImageInfo = { width: sourceRaster.width, height: sourceRaster.height };
+
+  const demSourceMode = message.demSourceMode || message.options?.demSourceMode || 'single';
+  if (Array.isArray(message.layerBlobs) && message.layerBlobs.some(Boolean)) {
+    sourceRaster = await buildStackedLayerRasterFromBlobs(message.layerBlobs);
+    sourceImageInfo = { width: sourceRaster.width, height: sourceRaster.height, mode: 'stack4' };
+  } else if (message.blob) {
+    sourceRaster = await buildRasterFromBlob(message.blob, demSourceMode);
+    sourceImageInfo = { width: sourceRaster.width, height: sourceRaster.height, mode: demSourceMode };
   }
+
   if (!sourceRaster) {
     throw new Error('No DEM image has been loaded into the worker yet.');
   }
   const tessellation = Math.max(1, Math.floor(Number(message.tessellation) || 1));
   const raster = resampleRasterBilinear(sourceRaster, tessellation);
-  await currentGpu.setDEM(raster, message.options || {});
+  await currentGpu.setDEM(raster, { ...(message.options || {}), demSourceMode });
   currentGpu.render();
-  const stats = cloneStats(await currentGpu.readbackStats());
+  const stats = cloneStats(currentGpu.getStats());
+  if (raster !== sourceRaster) {
+    releaseRaster(raster);
+  }
   return {
     stats,
     sourcePoints: getSourcePoints(),
@@ -341,9 +423,12 @@ self.onmessage = async (event) => {
           height: raster.height | 0,
           values: raster.values instanceof Float32Array ? raster.values : new Float32Array(raster.values || []),
           mask: raster.mask ? (raster.mask instanceof Uint8Array ? raster.mask : new Uint8Array(raster.mask)) : null,
-        }, message.options || {});
+          bands: Array.isArray(raster.bands)
+            ? raster.bands.map((band) => band instanceof Float32Array ? band : new Float32Array(band || []))
+            : null,
+        }, { ...(message.options || {}), demSourceMode: message.options?.demSourceMode || 'single' });
         currentGpu.render();
-        const stats = cloneStats(await currentGpu.readbackStats());
+        const stats = cloneStats(currentGpu.getStats());
         reply(requestId, { stats, sourcePoints: getSourcePoints(), ready: true, sourceImageInfo });
         postStatus(true);
         break;
@@ -358,9 +443,9 @@ self.onmessage = async (event) => {
       case 'step': {
         if (gpu?.ready) {
           if (message.render !== false) {
-            gpu.stepAndRender(Math.max(1, Number(message.iterations) || 1));
+            await gpu.stepAndRenderBench(Math.max(1, Number(message.iterations) || 1));
           } else {
-            gpu.step(Math.max(1, Number(message.iterations) || 1));
+            await gpu.stepBench(Math.max(1, Number(message.iterations) || 1));
           }
         }
         reply(requestId, { stepped: true, stats: cloneStats(gpu?.getStats?.() || null), sourcePoints: getSourcePoints() });
@@ -368,7 +453,7 @@ self.onmessage = async (event) => {
       }
 
       case 'readbackStats': {
-        const stats = gpu?.ready ? cloneStats(await gpu.readbackStats()) : cloneStats(gpu?.getStats?.() || null);
+        const stats = cloneStats(gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints(), lastFrameMs, running, sourceImageInfo });
         break;
       }
@@ -425,7 +510,7 @@ self.onmessage = async (event) => {
           gpu.resetRainTimer();
           gpu.render();
         }
-        const stats = gpu?.ready ? cloneStats(await gpu.readbackStats()) : cloneStats(gpu?.getStats?.() || null);
+        const stats = cloneStats(gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints() });
         break;
       }
@@ -435,7 +520,7 @@ self.onmessage = async (event) => {
           gpu.resetRainTimer();
           gpu.render();
         }
-        const stats = gpu?.ready ? cloneStats(await gpu.readbackStats()) : cloneStats(gpu?.getStats?.() || null);
+        const stats = cloneStats(gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints() });
         break;
       }
@@ -449,6 +534,7 @@ self.onmessage = async (event) => {
           lastFrameAt = 0;
           lastStatusPostAt = 0;
           lastRenderAt = 0;
+          lastGpuBenchAt = 0;
           scheduleNextFrame();
         }
         reply(requestId, { running: true, iterationsPerFrame: loopIterationsPerFrame });
