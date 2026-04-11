@@ -61,7 +61,7 @@ const LAYER_MATERIAL_PRESETS = {
   default_base: { label: 'base', hardnessMin: DEFAULT_HARDNESS_BASE, hardnessMax: DEFAULT_HARDNESS_BASE + DEFAULT_HARDNESS_VARIATION },
 };
 const DEFAULT_LAYER_MATERIALS = [
-  { enabled: true, preset: 'default_base', heightMin: 0.0, heightMax: 1.00, thermalEnabled: true },
+  { enabled: true, preset: 'default_base', heightMin: 0.00, heightMax: 1.00, thermalEnabled: true },
   { enabled: true, preset: 'silt', heightMin: 0.46, heightMax: 0.82, thermalEnabled: true },
   { enabled: true, preset: 'clay', heightMin: 0.20, heightMax: 0.58, thermalEnabled: true },
   { enabled: true, preset: 'bedrock', heightMin: 0.00, heightMax: 0.30, thermalEnabled: true },
@@ -566,7 +566,7 @@ function applyLayerMaterialPresetSelection(layerControl) {
   layerControl.hardnessMaxLabel.input.value = String(preset.hardnessMax);
 }
 
-function syncLegacySingleModeMaterialFields() {
+function syncSingleModeMaterialFields() {
   const primaryLayer = layerMaterialControls[0];
   const heightMin = readNumber(primaryLayer.heightMinLabel, DEFAULT_MIN_HEIGHT);
   const heightMax = readNumber(primaryLayer.heightMaxLabel, DEFAULT_MAX_HEIGHT);
@@ -601,7 +601,7 @@ function updateLayerDemUiState() {
       layer.heading.textContent = `Layer ${layerIndex + 1}`;
     }
   }
-  syncLegacySingleModeMaterialFields();
+  syncSingleModeMaterialFields();
 }
 
 const root = document.createElement('div');
@@ -717,7 +717,6 @@ const presetLabel = makeSelectLabel('Preset', [
 ], 'paper_balanced');
 const cameraAzimuthLabel = makeNumberLabel('Azimuth', DEFAULT_CAMERA_AZIMUTH, '84px', { min: -180, max: 180, step: 1 });
 const cameraElevationLabel = makeNumberLabel('Elevation', DEFAULT_CAMERA_ELEVATION, '84px', { min: 5, max: 89, step: 1 });
-// const cameraDistanceLabel = makeNumberLabel('Cam dist (legacy)', DEFAULT_CAMERA_DISTANCE, '108px', { min: 0.5, max: 10, step: 0.1 });
 const paintModeLabel = makeSelectLabel('Paint', [
   { value: 'none', label: 'off' },
   { value: 'raise', label: 'terrain +' },
@@ -1038,7 +1037,7 @@ fileInput.addEventListener('change', () => {
 demSourceModeLabel.input.addEventListener('change', () => {
   state.sourceUploadedToWorker = false;
   updateLayerDemUiState();
-  syncLegacySingleModeMaterialFields();
+  syncSingleModeMaterialFields();
   if (hasAnyDemSourceSelected()) {
     void initializeSimulation();
   } else {
@@ -1049,7 +1048,7 @@ demSourceModeLabel.input.addEventListener('change', () => {
 for (const [layerIndex, layer] of layerMaterialControls.entries()) {
   layer.materialPresetLabel.input.addEventListener('change', () => {
     applyLayerMaterialPresetSelection(layer);
-    if (layerIndex === 0) syncLegacySingleModeMaterialFields();
+    if (layerIndex === 0) syncSingleModeMaterialFields();
     if (hasAnyDemSourceSelected()) {
       void initializeSimulation();
     } else {
@@ -1058,7 +1057,7 @@ for (const [layerIndex, layer] of layerMaterialControls.entries()) {
   });
   for (const inputLabel of [layer.enableLabel, layer.heightMinLabel, layer.heightMaxLabel, layer.hardnessMinLabel, layer.hardnessMaxLabel, layer.thermalEnableLabel]) {
     inputLabel.input.addEventListener('input', () => {
-      if (layerIndex === 0) syncLegacySingleModeMaterialFields();
+      if (layerIndex === 0) syncSingleModeMaterialFields();
       if (hasAnyDemSourceSelected()) {
         void initializeSimulation();
       } else {
@@ -1066,7 +1065,7 @@ for (const [layerIndex, layer] of layerMaterialControls.entries()) {
       }
     });
     inputLabel.input.addEventListener('change', () => {
-      if (layerIndex === 0) syncLegacySingleModeMaterialFields();
+      if (layerIndex === 0) syncSingleModeMaterialFields();
       if (hasAnyDemSourceSelected()) {
         void initializeSimulation();
       } else {
@@ -1251,7 +1250,7 @@ for (const label of [
 
 sourceEnabledLabel.input.addEventListener('change', () => {
   refreshProcessControlState();
-  syncLegacySingleModeMaterialFields();
+  syncSingleModeMaterialFields();
   applySimulationParams();
   postWorker('render');
   void refreshWorkerStatusLight();
@@ -1291,7 +1290,7 @@ tessellationLabel.input.addEventListener('change', () => {
 
 applyPreset('paper_balanced');
 updateLayerDemUiState();
-syncLegacySingleModeMaterialFields();
+syncSingleModeMaterialFields();
 syncCanvasSizes();
 setGPUCanvasVisible(false);
 updateStatus();
@@ -1550,7 +1549,7 @@ async function initializeSimulation() {
     syncCanvasSizes();
     await ensureWorker();
     syncWorkerCanvasSize();
-    syncLegacySingleModeMaterialFields();
+    syncSingleModeMaterialFields();
     applySimulationParams();
     const demSourceMode = getDemSourceMode();
     const payload = {

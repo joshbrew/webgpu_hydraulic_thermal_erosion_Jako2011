@@ -14,6 +14,7 @@ let loopIterationsPerFrame = 5;
 let simulationParams = {};
 let sourceRaster = null;
 let sourceImageInfo = null;
+let gpuInitPromise = null;
 
 const hasWorkerRAF = typeof self.requestAnimationFrame === 'function';
 const workerRAF = hasWorkerRAF
@@ -65,15 +66,44 @@ async function ensureGpu() {
   if (!offscreenCanvas) {
     throw new Error('Worker canvas has not been initialized.');
   }
-  if (!gpu) {
-    gpu = new WebGPUTerrainErosion({ canvas: offscreenCanvas });
-    await gpu.initialize();
-    if (Object.keys(simulationParams).length > 0) {
-      gpu.setSimulationParams(simulationParams);
-    }
-    applyCanvasMetrics();
+  if (gpu) {
+    return gpu;
   }
-  return gpu;
+  if (!gpuInitPromise) {
+    gpuInitPromise = (async () => {
+      const instance = new WebGPUTerrainErosion({ canvas: offscreenCanvas });
+      await instance.initialize();
+      if (Object.keys(simulationParams).length > 0) {
+        instance.setSimulationParams(simulationParams);
+      }
+      gpu = instance;
+      applyCanvasMetrics();
+      return instance;
+    })().catch((error) => {
+      gpu = null;
+      gpuInitPromise = null;
+      throw error;
+    });
+  }
+  try {
+    return await gpuInitPromise;
+  } finally {
+    if (gpu) {
+      gpuInitPromise = null;
+    }
+  }
+}
+
+function warmGpuInBackground() {
+  if (gpu || gpuInitPromise || !offscreenCanvas) return;
+  void ensureGpu().then(() => {
+    postStatus(true);
+  }).catch((error) => {
+    self.postMessage({
+      type: 'workerError',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 function stopLoopInternal() {
@@ -378,8 +408,9 @@ self.onmessage = async (event) => {
           height: Math.max(1, Number(message.height) || 1),
           dpr: Math.max(1, Number(message.dpr) || 1),
         };
-        await ensureGpu();
-        reply(requestId, { initialized: true });
+        applyCanvasMetrics();
+        warmGpuInBackground();
+        reply(requestId, { initialized: true, warming: true });
         postStatus(true);
         break;
       }
@@ -557,6 +588,7 @@ self.onmessage = async (event) => {
           gpu.destroy();
           gpu = null;
         }
+        gpuInitPromise = null;
         sourceRaster = null;
         sourceImageInfo = null;
         reply(requestId, { cleared: true });
@@ -581,6 +613,7 @@ self.onmessage = async (event) => {
           gpu.destroy();
           gpu = null;
         }
+        gpuInitPromise = null;
         sourceRaster = null;
         sourceImageInfo = null;
         reply(requestId, { destroyed: true });

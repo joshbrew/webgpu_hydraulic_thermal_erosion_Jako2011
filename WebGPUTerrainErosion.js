@@ -287,7 +287,7 @@ export default class WebGPUTerrainErosion {
 
     this.#ensureCustomSpringBuffer();
     this.#ensureDummySceneTexture();
-    this.#createPipelines();
+    await this.#createPipelines();
     this.#writeParams();
     this.initialized = true;
   }
@@ -1615,7 +1615,7 @@ export default class WebGPUTerrainErosion {
     }
   }
 
-  #createPipelines() {
+  async #createPipelines() {
     const computeModule = this.device.createShaderModule({
       code: COMPUTE_WGSL_SOURCE,
       label: 'paper-erosion-compute-wgsl',
@@ -1630,6 +1630,13 @@ export default class WebGPUTerrainErosion {
       code: COMPOSITE_WGSL_SOURCE,
       label: 'paper-erosion-composite-wgsl',
     });
+
+    const createComputePipeline = typeof this.device.createComputePipelineAsync === 'function'
+      ? (descriptor) => this.device.createComputePipelineAsync(descriptor)
+      : async (descriptor) => this.device.createComputePipeline(descriptor);
+    const createRenderPipeline = typeof this.device.createRenderPipelineAsync === 'function'
+      ? (descriptor) => this.device.createRenderPipelineAsync(descriptor)
+      : async (descriptor) => this.device.createRenderPipeline(descriptor);
 
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
       label: 'paper-compute-bgl',
@@ -1680,98 +1687,102 @@ export default class WebGPUTerrainErosion {
       bindGroupLayouts: [this.compositeBindGroupLayout],
     });
 
-    this.fluxPipeline = this.device.createComputePipeline({
-      label: 'paper-flux-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'fluxMain' },
-    });
-
-    this.flowPipeline = this.device.createComputePipeline({
-      label: 'paper-flow-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'flowMain' },
-    });
-
-    this.erosionPipeline = this.device.createComputePipeline({
-      label: 'paper-erosion-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'erosionMain' },
-    });
-
-    this.transportPipeline = this.device.createComputePipeline({
-      label: 'paper-transport-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'transportMain' },
-    });
-
-    this.thermalOutflowPipeline = this.device.createComputePipeline({
-      label: 'paper-thermal-outflow-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'thermalOutflowMain' },
-    });
-
-    this.thermalApplyPipeline = this.device.createComputePipeline({
-      label: 'paper-thermal-apply-pipeline',
-      layout: computeLayout,
-      compute: { module: computeModule, entryPoint: 'thermalApplyMain' },
-    });
-
-    this.renderPipeline = this.device.createRenderPipeline({
-      label: 'paper-render-pipeline',
-      layout: renderLayout,
-      vertex: { module: renderModule, entryPoint: 'vsMesh' },
-      fragment: {
-        module: renderModule,
-        entryPoint: 'fsMesh',
-        targets: [{ format: this.presentationFormat }],
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      },
-    });
-
-    this.waterRenderPipeline = this.device.createRenderPipeline({
-      label: 'paper-water-render-pipeline',
-      layout: renderLayout,
-      vertex: { module: renderModule, entryPoint: 'vsMesh' },
-      fragment: {
-        module: renderModule,
-        entryPoint: 'fsMesh',
-        targets: [{
-          format: this.presentationFormat,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        }],
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: false,
-        depthCompare: 'less-equal',
-      },
-    });
-
-    this.compositePipeline = this.device.createRenderPipeline({
-      label: 'paper-composite-pipeline',
-      layout: compositeLayout,
-      vertex: { module: compositeModule, entryPoint: 'vsComposite' },
-      fragment: {
-        module: compositeModule,
-        entryPoint: 'fsComposite',
-        targets: [{ format: this.presentationFormat }],
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: false,
-        depthCompare: 'always',
-      },
-    });
+    [
+      this.fluxPipeline,
+      this.flowPipeline,
+      this.erosionPipeline,
+      this.transportPipeline,
+      this.thermalOutflowPipeline,
+      this.thermalApplyPipeline,
+      this.renderPipeline,
+      this.waterRenderPipeline,
+      this.compositePipeline,
+    ] = await Promise.all([
+      createComputePipeline({
+        label: 'paper-flux-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'fluxMain' },
+      }),
+      createComputePipeline({
+        label: 'paper-flow-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'flowMain' },
+      }),
+      createComputePipeline({
+        label: 'paper-erosion-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'erosionMain' },
+      }),
+      createComputePipeline({
+        label: 'paper-transport-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'transportMain' },
+      }),
+      createComputePipeline({
+        label: 'paper-thermal-outflow-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'thermalOutflowMain' },
+      }),
+      createComputePipeline({
+        label: 'paper-thermal-apply-pipeline',
+        layout: computeLayout,
+        compute: { module: computeModule, entryPoint: 'thermalApplyMain' },
+      }),
+      createRenderPipeline({
+        label: 'paper-render-pipeline',
+        layout: renderLayout,
+        vertex: { module: renderModule, entryPoint: 'vsMesh' },
+        fragment: {
+          module: renderModule,
+          entryPoint: 'fsMesh',
+          targets: [{ format: this.presentationFormat }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: {
+          format: 'depth24plus',
+          depthWriteEnabled: true,
+          depthCompare: 'less',
+        },
+      }),
+      createRenderPipeline({
+        label: 'paper-water-render-pipeline',
+        layout: renderLayout,
+        vertex: { module: renderModule, entryPoint: 'vsMesh' },
+        fragment: {
+          module: renderModule,
+          entryPoint: 'fsMesh',
+          targets: [{
+            format: this.presentationFormat,
+            blend: {
+              color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            },
+          }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: {
+          format: 'depth24plus',
+          depthWriteEnabled: false,
+          depthCompare: 'less-equal',
+        },
+      }),
+      createRenderPipeline({
+        label: 'paper-composite-pipeline',
+        layout: compositeLayout,
+        vertex: { module: compositeModule, entryPoint: 'vsComposite' },
+        fragment: {
+          module: compositeModule,
+          entryPoint: 'fsComposite',
+          targets: [{ format: this.presentationFormat }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: {
+          format: 'depth24plus',
+          depthWriteEnabled: false,
+          depthCompare: 'always',
+        },
+      }),
+    ]);
   }
 
   #rebuildBindGroups() {
@@ -2822,11 +2833,14 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
 
   let shorelineFade = smoothstep(0.010, 0.080, in.water);
   let waterAlpha = clamp(in.water * shorelineFade * max(renderParams.shading.x * 2.6, 0.0), 0.0, 0.97);
+  let mode = i32(round(renderParams.shading.z));
+
   if (waterPass) {
     if (waterAlpha <= max(renderParams.misc.w, 0.01)) {
       return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
     let w = clamp(in.water * 2.2, 0.0, 1.0);
+    let s = clamp(in.sediment * renderParams.shading.y * 2.7, 0.0, 1.0);
     let viewDir = normalize(renderParams.cameraPos.xyz - in.worldPos);
     let lightDir = normalize(renderParams.lightDir.xyz);
     let macroNormal = renderWaterNormalAtPos(in.gridPos);
@@ -2837,37 +2851,57 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
       macroNormal.z * 1.10 + microNormal.z * 1.90
     ));
     let ndv = clamp(dot(combinedNormal, viewDir), 0.0, 1.0);
-    let fresnel = pow(1.0 - ndv, 4.5);
-    let halfVec = normalize(viewDir + lightDir);
-    let sunSpecTight = pow(max(dot(combinedNormal, halfVec), 0.0), 120.0);
-    let sunSpecBroad = pow(max(dot(combinedNormal, halfVec), 0.0), 32.0);
+    let fresnel = pow(1.0 - ndv, 3.8);
     let sunFacing = clamp(dot(combinedNormal, lightDir), 0.0, 1.0);
-    let deepTint = mix(vec3<f32>(0.004, 0.018, 0.052), vec3<f32>(0.010, 0.038, 0.100), w);
-    let shallowTint = mix(vec3<f32>(0.012, 0.060, 0.145), vec3<f32>(0.030, 0.115, 0.220), w);
-    let waterBase = mix(deepTint, shallowTint, clamp(0.16 + 0.56 * w, 0.0, 1.0));
-    var waterColorOnly = waterBase * (0.72 + 0.22 * sunFacing);
-    waterColorOnly += vec3<f32>(1.80, 1.65, 1.40) * sunSpecTight;
-    waterColorOnly += vec3<f32>(0.16, 0.14, 0.12) * (sunSpecBroad * 0.35);
-    waterColorOnly += vec3<f32>(0.02, 0.02, 0.018) * fresnel;
-    let finalAlpha = clamp(waterAlpha * (0.94 + 0.06 * fresnel), 0.0, 0.97);
+    let halfDir = normalize(lightDir + viewDir);
+    let sunSpecTight = pow(clamp(dot(combinedNormal, halfDir), 0.0, 1.0), 54.0);
+    let sunSpecBroad = pow(clamp(dot(combinedNormal, halfDir), 0.0, 1.0), 16.0);
+    let rippleGlow = pow(clamp(1.0 - combinedNormal.y, 0.0, 1.0), 0.75);
+
+    if (mode == 3) {
+      let deepTint = mix(vec3<f32>(0.002, 0.008, 0.016), vec3<f32>(0.006, 0.024, 0.040), w);
+      let shallowTint = mix(vec3<f32>(0.008, 0.030, 0.050), vec3<f32>(0.018, 0.060, 0.080), w);
+      let mutedWater = mix(deepTint, shallowTint, clamp(0.22 + 0.48 * w, 0.0, 1.0));
+      let suspendedSedimentGlow = mix(vec3<f32>(0.16, 0.12, 0.05), vec3<f32>(0.52, 0.36, 0.10), s);
+      var waterColorOnly = mutedWater * (0.82 + 0.06 * sunFacing);
+      waterColorOnly += suspendedSedimentGlow * (0.05 + 0.12 * s);
+      waterColorOnly += vec3<f32>(0.000, 0.010, 0.018) * fresnel;
+      let finalAlpha = clamp(waterAlpha * (0.18 + 0.14 * w), 0.0, 0.32);
+      return vec4<f32>(clamp(waterColorOnly, vec3<f32>(0.0), vec3<f32>(1.0)), finalAlpha);
+    }
+
+    let deepTint = mix(vec3<f32>(0.003, 0.018, 0.060), vec3<f32>(0.008, 0.050, 0.135), w);
+    let shallowTint = mix(vec3<f32>(0.015, 0.120, 0.220), vec3<f32>(0.045, 0.280, 0.380), w);
+    let waterBase = mix(deepTint, shallowTint, clamp(0.20 + 0.58 * w, 0.0, 1.0));
+    var waterColorOnly = waterBase * (0.78 + 0.12 * sunFacing);
+    waterColorOnly += vec3<f32>(0.010, 0.095, 0.145) * (0.24 + 0.76 * w);
+    waterColorOnly += vec3<f32>(0.020, 0.220, 0.280) * rippleGlow * (0.18 + 0.42 * w);
+    waterColorOnly += vec3<f32>(1.30, 1.18, 0.96) * sunSpecTight * (0.10 + 0.32 * w);
+    waterColorOnly += vec3<f32>(0.18, 0.16, 0.13) * sunSpecBroad * (0.06 + 0.12 * w);
+    waterColorOnly += vec3<f32>(0.000, 0.028, 0.050) * fresnel;
+    let finalAlpha = clamp(waterAlpha * (0.95 + 0.05 * fresnel), 0.0, 0.97);
     return vec4<f32>(clamp(waterColorOnly, vec3<f32>(0.0), vec3<f32>(1.0)), finalAlpha);
   }
-
-  let mode = i32(round(renderParams.shading.z));
 
   if (mode == 0) {
     return vec4<f32>(terrainColor, 1.0);
   }
   if (mode == 2) {
-    let w = clamp(in.water * 1.6, 0.0, 1.0);
-    return vec4<f32>(mix(vec3<f32>(0.02, 0.16, 0.46), vec3<f32>(0.40, 0.96, 1.00), w), 1.0);
+    let w = clamp(in.water * 1.8, 0.0, 1.0);
+    let abyss = mix(vec3<f32>(0.004, 0.012, 0.026), vec3<f32>(0.010, 0.030, 0.052), h);
+    let shelf = mix(vec3<f32>(0.018, 0.040, 0.060), vec3<f32>(0.050, 0.100, 0.110), smoothstep(0.02, 0.32, h));
+    let seabed = mix(abyss, shelf, smoothstep(0.0, 0.65, w));
+    let wetSediment = mix(vec3<f32>(0.08, 0.22, 0.18), vec3<f32>(0.24, 0.52, 0.30), clamp(in.sediment * 2.2, 0.0, 1.0));
+    let seabedLit = mix(seabed, wetSediment, clamp(in.sediment * 0.22 + (1.0 - w) * 0.08, 0.0, 0.32));
+    return vec4<f32>(clamp(seabedLit * (0.78 + 0.10 * lambert + 0.12 * hemi), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
   }
   if (mode == 3) {
-    let s = clamp(in.sediment * renderParams.shading.y * 2.1, 0.0, 1.0);
-    let matteLambert = 0.72 + 0.18 * lambert + 0.10 * hemi;
-    let sedimentBase = mix(vec3<f32>(0.14, 0.11, 0.09), vec3<f32>(0.96, 0.78, 0.44), s);
+    let s = clamp(in.sediment * renderParams.shading.y * 2.7, 0.0, 1.0);
+    let matteLambert = 0.80 + 0.18 * lambert + 0.14 * hemi;
+    let sedimentBase = mix(vec3<f32>(0.18, 0.14, 0.10), vec3<f32>(1.00, 0.86, 0.46), s);
     var sedimentColor = sedimentBase * matteLambert;
-    sedimentColor = mix(sedimentColor, vec3<f32>(0.98, 0.86, 0.62), s * 0.30);
+    sedimentColor = mix(sedimentColor, vec3<f32>(1.00, 0.94, 0.70), s * 0.42);
+    sedimentColor += vec3<f32>(0.04, 0.06, 0.03) * pow(s, 0.72);
     return vec4<f32>(clamp(sedimentColor, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
   }
   if (mode == 4) {

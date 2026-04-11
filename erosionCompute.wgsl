@@ -1,3 +1,5 @@
+
+
 struct SimParams {
   dims: vec4<f32>,
   hydro0: vec4<f32>,
@@ -33,6 +35,10 @@ struct FloatBuffer {
   values: array<f32>,
 }
 
+struct LayerMaterialParams {
+  layers: array<vec4<f32>, 4>,
+}
+
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read> srcState: StateBuffer;
 @group(0) @binding(2) var<storage, read_write> dstState: StateBuffer;
@@ -41,6 +47,8 @@ struct FloatBuffer {
 @group(0) @binding(5) var<storage, read_write> thermalPipeA: Vec4Buffer;
 @group(0) @binding(6) var<storage, read_write> thermalPipeB: Vec4Buffer;
 @group(0) @binding(7) var<storage, read> paintedSourceState: FloatBuffer;
+@group(0) @binding(8) var<storage, read> layerTopState: Vec4Buffer;
+@group(0) @binding(9) var<uniform> layerMaterials: LayerMaterialParams;
 
 fn gridWidth() -> u32 { return u32(params.dims.x); }
 fn gridHeight() -> u32 { return u32(params.dims.y); }
@@ -86,6 +94,74 @@ fn totalHeight(cell: CellState) -> f32 { return cell.terrain + cell.water; }
 fn finiteOr(value: f32, fallback: f32) -> f32 {
   if (value == value && abs(value) < 1e30) { return value; }
   return fallback;
+}
+
+fn resolveMaterialInfo(i: u32, terrain: f32) -> vec4<f32> {
+  let tops = layerTopState.values[i];
+  var chosenIndex: u32 = 0u;
+  var foundChoice = false;
+  var bestAbove = 1e30;
+  var highestTop = -1e30;
+  var highestIndex: u32 = 0u;
+
+  for (var layerIndex: u32 = 0u; layerIndex < 4u; layerIndex = layerIndex + 1u) {
+    let material = layerMaterials.layers[layerIndex];
+    if (material.z < 0.5) { continue; }
+    let top = tops[layerIndex];
+    if (!(top > -1e8)) { continue; }
+    if (top > highestTop) {
+      highestTop = top;
+      highestIndex = layerIndex;
+    }
+    if (top >= terrain && top < bestAbove) {
+      bestAbove = top;
+      chosenIndex = layerIndex;
+      foundChoice = true;
+    }
+  }
+
+  if (!foundChoice) {
+    if (!(highestTop > -1e8)) {
+      return vec4<f32>(-1.0, 1.0, -1.0, 0.0);
+    }
+    chosenIndex = highestIndex;
+  }
+
+  let chosenTop = tops[chosenIndex];
+  var lowerTop = -1e30;
+  for (var layerIndex: u32 = 0u; layerIndex < 4u; layerIndex = layerIndex + 1u) {
+    let material = layerMaterials.layers[layerIndex];
+    if (material.z < 0.5) { continue; }
+    let top = tops[layerIndex];
+    if (!(top > -1e8) || top >= chosenTop) { continue; }
+    if (top > lowerTop) { lowerTop = top; }
+  }
+
+  var depthT = 0.0;
+  if (lowerTop > -1e8) {
+    depthT = clamp((chosenTop - terrain) / max(chosenTop - lowerTop, 1e-6), 0.0, 1.0);
+  } else if (terrain < chosenTop) {
+    depthT = 1.0;
+  }
+
+  let selectedMaterial = layerMaterials.layers[chosenIndex];
+  return vec4<f32>(clamp(mix(selectedMaterial.x, selectedMaterial.y, depthT), 0.0, 1.0), selectedMaterial.w, f32(chosenIndex), depthT);
+}
+
+fn resolveMaterialHardness(i: u32, terrain: f32, fallbackHardness: f32) -> f32 {
+  let info = resolveMaterialInfo(i, terrain);
+  if (info.z < 0.0) {
+    return clamp(fallbackHardness, 0.0, 1.0);
+  }
+  return info.x;
+}
+
+fn resolveMaterialThermalEnabled(i: u32, terrain: f32) -> bool {
+  let info = resolveMaterialInfo(i, terrain);
+  if (info.z < 0.0) {
+    return true;
+  }
+  return info.y >= 0.5;
 }
 
 fn terrainNormal(x: i32, y: i32) -> vec3<f32> {
@@ -207,7 +283,8 @@ fn fluxMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let bottomCell = readStateClamped(x, y + 1);
 
   let edgeDrain = max(params.render0.w, 0.0);
-  let outsideTotal = -edgeDrain;
+  let retainedEdgeWater = max(params.source2.w, 0.0);
+  let outsideTotal = select(centerTotal, cell.terrain + retainedEdgeWater - edgeDrain, rainWater > retainedEdgeWater + 1e-6);
   let leftTotal = select(outsideTotal, leftCell.terrain + leftCell.water + dt * rainAmountAt(u32(max(x - 1, 0)), gid.y), inBounds(x - 1, y));
   let rightTotal = select(outsideTotal, rightCell.terrain + rightCell.water + dt * rainAmountAt(u32(min(x + 1, i32(gridWidth()) - 1)), gid.y), inBounds(x + 1, y));
   let topTotal = select(outsideTotal, topCell.terrain + topCell.water + dt * rainAmountAt(gid.x, u32(max(y - 1, 0))), inBounds(x, y - 1));
@@ -232,6 +309,20 @@ fn fluxMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let maxOut = finiteOr(rainWater * cellArea() / max(dt, 1e-6), 0.0);
   if (sumOut > maxOut && sumOut > 1e-6) {
     nextFlux *= maxOut / sumOut;
+  }
+
+  let maxOutsideOut = max(rainWater - retainedEdgeWater, 0.0) * cellArea() / max(dt, 1e-6);
+  let outsideFluxX = select(0.0, nextFlux.x, !inBounds(x - 1, y));
+  let outsideFluxY = select(0.0, nextFlux.y, !inBounds(x + 1, y));
+  let outsideFluxZ = select(0.0, nextFlux.z, !inBounds(x, y - 1));
+  let outsideFluxW = select(0.0, nextFlux.w, !inBounds(x, y + 1));
+  let sumOutsideOut = outsideFluxX + outsideFluxY + outsideFluxZ + outsideFluxW;
+  if (sumOutsideOut > maxOutsideOut && sumOutsideOut > 1e-6) {
+    let outsideScale = maxOutsideOut / sumOutsideOut;
+    if (!inBounds(x - 1, y)) { nextFlux.x *= outsideScale; }
+    if (!inBounds(x + 1, y)) { nextFlux.y *= outsideScale; }
+    if (!inBounds(x, y - 1)) { nextFlux.z *= outsideScale; }
+    if (!inBounds(x, y + 1)) { nextFlux.w *= outsideScale; }
   }
   nextFlux *= max(0.0, 1.0 - params.misc0.z * dt);
   fluxState.values[i] = vec4<f32>(
@@ -289,7 +380,8 @@ fn flowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   velocityState.values[i] = vec4<f32>(finiteOr(vel.x, 0.0), finiteOr(vel.y, 0.0), finiteOr(speed, 0.0), 0.0);
 
-  dstState.cells[i] = CellState(finiteOr(cell.terrain, 0.0), finiteOr(water, 0.0), finiteOr(cell.sediment, 0.0), finiteOr(cell.hardness, 0.1), cell.mask, 0.0, 0.0, finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, 0.1));
+  dstState.cells[i] = CellState(finiteOr(cell.terrain, 0.0), finiteOr(water, 0.0), finiteOr(cell.sediment, 0.0), activeHardness, cell.mask, 0.0, 0.0, finiteOr(cell.aux2, 0.0));
 }
 
 fn terrainNeighborMean(x: i32, y: i32, center: f32) -> f32 {
@@ -339,23 +431,24 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   );
   let flow3Dir = flow3 / max(length(flow3), 1e-6);
   let collisionTerm = select(0.0, max(dot(-n, flow3Dir), 0.0), speed > 1e-6);
-  let capacityTerm = max(max(collisionTerm, sinAlpha * 0.2), 0.05);
+  let capacityTerm = max(max(collisionTerm * 0.80, sinAlpha * 0.12), 0.03);
   let capacity = finiteOr(params.hydro1.x * capacityTerm * speed * depthLimiter(cell.water), 0.0);
 
   var terrain = cell.terrain;
   var water = cell.water;
   var sediment = cell.sediment;
-  var hardness = cell.hardness;
+  var hardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, params.misc0.y));
 
   var history = finiteOr(cell.aux2, 0.0) * params.misc0.x;
 
   if (!hydraulicErosionEnabled()) {
-    dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y), cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(cell.aux2, 0.0));
+    let preservedHardness = resolveMaterialHardness(i, clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y));
+    dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), preservedHardness, cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(cell.aux2, 0.0));
     return;
   }
 
   if (capacity > sediment && water > 1e-6) {
-    let erodeAmount = timeStep() * max(hardness, 0.02) * params.hydro1.y * (capacity - sediment);
+    let erodeAmount = timeStep() * max(hardness, 1e-6) * params.hydro1.y * (capacity - sediment);
     let clampedErode = min(min(erodeAmount, max(water, 0.0)), max(terrain, 0.0));
     terrain = max(0.0, terrain - clampedErode);
     sediment += clampedErode;
@@ -363,7 +456,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     history -= clampedErode * 240.0;
   } else if (sediment > capacity) {
     let sedimentExcess = sediment - capacity;
-    let depositAmount = timeStep() * params.hydro1.z * sedimentExcess;
+    let depositAmount = timeStep() * params.hydro1.z * sedimentExcess * 1.12;
     let neighborMean = terrainNeighborMean(x, y, terrain);
     let localCeiling = max(terrain + 0.001, neighborMean + params.thermal0.w * 0.9 + max(cell.water, 0.0) * 0.08);
     let spikeGuard = max(0.0, localCeiling - terrain);
@@ -371,7 +464,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     terrain += clampedDeposit;
     sediment -= clampedDeposit;
     water = max(0.0, water - clampedDeposit);
-    hardness = max(params.misc0.y, hardness - timeStep() * params.hydro1.w * params.hydro1.y * sedimentExcess);
+    hardness = max(0.0, hardness - timeStep() * params.hydro1.w * params.hydro1.y * sedimentExcess * 0.75);
     history += clampedDeposit * 180.0;
   }
 
@@ -379,6 +472,7 @@ fn erosionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   terrain = clamp(terrain, 0.0, 2.0);
   water = clamp(water, 0.0, 2.0);
   sediment = clamp(sediment, 0.0, 2.0);
+  hardness = resolveMaterialHardness(i, terrain, finiteOr(hardness, params.misc0.y));
   dstState.cells[i] = CellState(finiteOr(terrain, 0.0), finiteOr(water, 0.0), finiteOr(sediment, 0.0), finiteOr(hardness, params.misc0.y), cell.mask, finiteOr(capacity, 0.0), finiteOr(speed, 0.0), finiteOr(history, 0.0));
 }
 
@@ -401,7 +495,8 @@ fn transportMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let preservedSediment = clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0);
   let water = clamp(max(0.0, finiteOr(cell.water, 0.0) * (1.0 - params.hydro0.y * timeStep())), 0.0, 2.0);
   let nextSediment = select(transportedSediment, preservedSediment, !hydraulicErosionEnabled());
-  dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), water, nextSediment, finiteOr(cell.hardness, params.misc0.y), cell.mask, cell.aux0, cell.aux1, finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y));
+  dstState.cells[i] = CellState(clamp(finiteOr(cell.terrain, 0.0), 0.0, 2.0), water, nextSediment, activeHardness, cell.mask, cell.aux0, cell.aux1, finiteOr(cell.aux2, 0.0));
 }
 
 @compute @workgroup_size(8, 8)
@@ -418,8 +513,15 @@ fn thermalOutflowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let x = i32(gid.x);
   let y = i32(gid.y);
-  let softness = clamp(0.30 + max(cell.hardness, 0.02) * 1.35, 0.20, 1.20);
-  let thresholdBase = max(params.thermal0.w * 0.5, params.thermal0.z * max(cell.hardness, 0.02) * 0.55 + params.thermal0.w * 0.35);
+  let activeHardness = resolveMaterialHardness(i, finiteOr(cell.terrain, 0.0), finiteOr(cell.hardness, params.misc0.y));
+  let thermalAllowed = resolveMaterialThermalEnabled(i, finiteOr(cell.terrain, 0.0));
+  if (!thermalAllowed || params.thermal0.y <= 1e-6) {
+    thermalPipeA.values[i] = vec4<f32>(0.0);
+    thermalPipeB.values[i] = vec4<f32>(0.0);
+    return;
+  }
+  let softness = clamp(0.20 + max(activeHardness, 0.0) * 0.85, 0.08, 0.85);
+  let thresholdBase = max(params.thermal0.w * 0.7, params.thermal0.z * max(activeHardness, 0.0) * 0.75 + params.thermal0.w * 0.55);
 
   var rawCard = vec4<f32>(0.0);
   var rawDiag = vec4<f32>(0.0);
@@ -480,7 +582,7 @@ fn thermalOutflowMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let totalOut = min(cell.terrain, cellArea() * timeStep() * params.thermal0.y * softness * maxExcess * 1.35);
+  let totalOut = min(cell.terrain, cellArea() * timeStep() * params.thermal0.y * softness * maxExcess * 0.72);
   thermalPipeA.values[i] = rawCard * (totalOut / weightSum);
   thermalPipeB.values[i] = rawDiag * (totalOut / weightSum);
 }
@@ -513,6 +615,7 @@ fn thermalApplyMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     readThermalBOrZero(x + 1, y + 1).x;
 
   let terrain = clamp(max(0.0, finiteOr(cell.terrain, 0.0) - finiteOr(selfOut, 0.0) + finiteOr(incoming, 0.0)), 0.0, 2.0);
-  dstState.cells[i] = CellState(terrain, clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), finiteOr(cell.hardness, params.misc0.y), cell.mask, finiteOr(selfOut, 0.0), finiteOr(incoming, 0.0), finiteOr(cell.aux2, 0.0));
+  let activeHardness = resolveMaterialHardness(i, terrain, finiteOr(cell.hardness, params.misc0.y));
+  dstState.cells[i] = CellState(terrain, clamp(finiteOr(cell.water, 0.0), 0.0, 2.0), clamp(finiteOr(cell.sediment, 0.0), 0.0, 2.0), activeHardness, cell.mask, finiteOr(selfOut, 0.0), finiteOr(incoming, 0.0), finiteOr(cell.aux2, 0.0));
 }
 
