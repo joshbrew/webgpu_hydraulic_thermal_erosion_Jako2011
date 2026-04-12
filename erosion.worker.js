@@ -47,6 +47,8 @@ function postStatus(force = false) {
     sourcePoints: force ? getSourcePoints() : undefined,
     lastFrameMs,
     running,
+    gpuReady: !!gpu,
+    simReady: !!stats?.ready,
     sourceImageInfo: force ? sourceImageInfo : undefined,
   });
 }
@@ -360,6 +362,12 @@ function releaseRaster(raster) {
   raster.bands = null;
 }
 
+async function waitForGpuCompletion(currentGpu) {
+  const queue = currentGpu?.device?.queue;
+  if (!queue || typeof queue.onSubmittedWorkDone !== 'function') return;
+  await queue.onSubmittedWorkDone();
+}
+
 async function loadRasterIntoGpu(message) {
   const currentGpu = await ensureGpu();
   if (Object.keys(simulationParams).length > 0) {
@@ -466,7 +474,12 @@ self.onmessage = async (event) => {
       }
 
       case 'render': {
-        gpu?.render?.();
+        if (gpu?.ready) {
+          gpu.render();
+          if (message.waitForCompletion) {
+            await waitForGpuCompletion(gpu);
+          }
+        }
         reply(requestId, { rendered: true });
         break;
       }

@@ -360,6 +360,10 @@ const state = {
   layerSourceFiles: [null, null, null, null],
   worker: null,
   workerReady: false,
+  workerWarming: false,
+  simReady: false,
+  simulationLoading: false,
+  simulationRequestId: 0,
   workerCanvasTransferred: false,
   running: false,
   lastFrameMs: 0,
@@ -412,6 +416,9 @@ function attachWorkerListeners(worker) {
       if (message.sourceImageInfo) state.sourceImageInfo = message.sourceImageInfo;
       if (Number.isFinite(message.lastFrameMs)) state.lastFrameMs = message.lastFrameMs;
       if (typeof message.running === 'boolean') state.running = message.running;
+      if (typeof message.gpuReady === 'boolean') state.workerWarming = !message.gpuReady;
+      if (typeof message.simReady === 'boolean') state.simReady = message.simReady;
+      updateStatus();
       updateStats();
       return;
     }
@@ -441,13 +448,15 @@ async function ensureWorker() {
   const offscreen = gpuCanvas.transferControlToOffscreen();
   state.workerCanvasTransferred = true;
   const metrics = getCanvasMetrics();
-  await callWorker('init', {
+  const response = await callWorker('init', {
     canvas: offscreen,
     width: metrics.width,
     height: metrics.height,
     dpr: metrics.dpr,
   }, [offscreen]);
   state.workerReady = true;
+  state.workerWarming = !!response.warming;
+  updateStatus();
   return worker;
 }
 
@@ -1019,6 +1028,9 @@ window.addEventListener('beforeunload', () => {
     state.worker.terminate();
     state.worker = null;
     state.workerReady = false;
+    state.workerWarming = false;
+    state.simReady = false;
+    state.simulationLoading = false;
   }
 });
 
@@ -1524,6 +1536,8 @@ async function loadSourceImage(file) {
   state.gpuStats = null;
   state.sourcePoints = [];
   state.lastFrameMs = 0;
+  state.simReady = false;
+  state.simulationLoading = false;
 
   resetButton.disabled = false;
   exportDemButton.disabled = true;
@@ -1535,19 +1549,28 @@ async function loadSourceImage(file) {
     await initializeSimulation();
   } catch (error) {
     clearAll();
+void ensureWorker().catch((error) => {
+  console.error('[WebGPU Erosion UI] worker prewarm failed', error);
+  updateStatus(error instanceof Error ? error.message : String(error));
+});
     updateStatus(error instanceof Error ? error.message : String(error));
   }
 }
 
 async function initializeSimulation() {
   if (!hasAnyDemSourceSelected()) return;
+  const requestId = ++state.simulationRequestId;
   stopLoop();
   exportDemButton.disabled = true;
-  updateStatus('Initializing WebGPU…');
+  state.simulationLoading = true;
+  state.simReady = false;
+  setGPUCanvasVisible(false);
+  updateStatus('Loading DEM…');
 
   try {
     syncCanvasSizes();
     await ensureWorker();
+    if (requestId !== state.simulationRequestId) return;
     syncWorkerCanvasSize();
     syncSingleModeMaterialFields();
     applySimulationParams();
@@ -1570,26 +1593,41 @@ async function initializeSimulation() {
       }
     }
     const response = await callWorker('loadDEMImage', payload);
+    if (requestId !== state.simulationRequestId) return;
     state.sourceUploadedToWorker = true;
     state.buildCount++;
     state.sourceFileName = getSourceSummaryName();
     state.sourceImageInfo = response.sourceImageInfo ?? state.sourceImageInfo;
     state.gpuStats = response.stats ?? state.gpuStats;
     state.sourcePoints = response.sourcePoints ?? state.sourcePoints;
+    state.simReady = !!(response.stats?.ready || response.ready);
     runButton.disabled = false;
     stepButton.disabled = false;
     exportDemButton.disabled = false;
     clearSpringsButton.disabled = false;
     resetButton.disabled = false;
     refreshProcessControlState();
-    setGPUCanvasVisible(true);
-    updateStatus('GPU sim ready');
+    setGPUCanvasVisible(state.simReady);
+    if (state.simReady) {
+      await callWorker('render', { waitForCompletion: true });
+      if (requestId !== state.simulationRequestId) return;
+      updateStatus('DEM loaded');
+      void scheduleReadbackStats(true);
+    } else {
+      updateStatus('DEM uploaded, waiting for first render…');
+    }
     updateStats();
-    void scheduleReadbackStats(true);
   } catch (error) {
+    if (requestId !== state.simulationRequestId) return;
     console.error('[WebGPU Erosion UI] initializeSimulation failed', error);
+    state.simReady = false;
     setGPUCanvasVisible(false);
     updateStatus(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (requestId === state.simulationRequestId) {
+      state.simulationLoading = false;
+      updateStatus();
+    }
   }
 }
 
@@ -1742,7 +1780,7 @@ function applyPreset(name) {
       capacityScale: 0.82, suspensionRate: 0.32, depositionRate: 1.22, softeningRate: 2.8,
       maxErosionDepth: 0.09, thermalRate: 0.24, talusCoeff: 0.92, talusBias: 0.12,
       sourceStrength: 0.06, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, edgeWaterFloor: 0.0, renderMode: 0,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
     },
     river_cut: {
       iterationsPerFrame: 5, stepIterations: 160,
@@ -1750,7 +1788,7 @@ function applyPreset(name) {
       capacityScale: 0.95, suspensionRate: 0.48, depositionRate: 1.02, softeningRate: 2.8,
       maxErosionDepth: 0.08, thermalRate: 0.22, talusCoeff: 0.88, talusBias: 0.11,
       sourceStrength: 0.09, sourceRadius: 4.0, sourceEnabled: true, sourceLayoutMode: 1, randomSpringCount: 4,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, edgeWaterFloor: 0.0, renderMode: 0,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
     },
     delta_depositor: {
       iterationsPerFrame: 5, stepIterations: 192,
@@ -1774,7 +1812,7 @@ function applyPreset(name) {
       capacityScale: 0.1, suspensionRate: 0.05, depositionRate: 0.85, softeningRate: 1.0,
       maxErosionDepth: 0.06, thermalRate: 1.10, talusCoeff: 0.55, talusBias: 0.05,
       sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, renderMode: 5,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 5,
     },
     gentle_weathering: {
       iterationsPerFrame: 5, stepIterations: 96,
@@ -1782,7 +1820,7 @@ function applyPreset(name) {
       capacityScale: 0.45, suspensionRate: 0.18, depositionRate: 1.0, softeningRate: 2.0,
       maxErosionDepth: 0.10, thermalRate: 0.12, talusCoeff: 0.8, talusBias: 0.1,
       sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, edgeWaterFloor: 0.0, renderMode: 0,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
     },
     rapid_incision: {
       iterationsPerFrame: 5, stepIterations: 192,
@@ -1790,7 +1828,7 @@ function applyPreset(name) {
       capacityScale: 1.4, suspensionRate: 0.9, depositionRate: 0.75, softeningRate: 6.0,
       maxErosionDepth: 0.10, thermalRate: 0.12, talusCoeff: 0.72, talusBias: 0.08,
       sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, edgeWaterFloor: 0.0, renderMode: 0,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
     },
     flash_flood: {
       iterationsPerFrame: 5, stepIterations: 192,
@@ -1798,7 +1836,7 @@ function applyPreset(name) {
       capacityScale: 1.3, suspensionRate: 0.85, depositionRate: 0.8, softeningRate: 5.0,
       maxErosionDepth: 0.08, thermalRate: 0.10, talusCoeff: 0.75, talusBias: 0.08,
       sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 50.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, renderMode: 0,
+      rainDuration: 50.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 0,
     },
     badlands: {
       iterationsPerFrame: 5, stepIterations: 160,
@@ -1806,7 +1844,7 @@ function applyPreset(name) {
       capacityScale: 1.0, suspensionRate: 0.55, depositionRate: 0.95, softeningRate: 4.0,
       maxErosionDepth: 0.09, thermalRate: 0.22, talusCoeff: 0.68, talusBias: 0.08,
       sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 25.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, renderMode: 0,
+      rainDuration: 25.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 0,
     },
     canyon_carver: {
       iterationsPerFrame: 5, stepIterations: 224,
@@ -1814,7 +1852,7 @@ function applyPreset(name) {
       capacityScale: 1.55, suspensionRate: 1.0, depositionRate: 0.7, softeningRate: 6.0,
       maxErosionDepth: 0.08, thermalRate: 0.16, talusCoeff: 0.72, talusBias: 0.08,
       sourceStrength: 0.08, sourceRadius: 3.0, sourceEnabled: true, sourceLayoutMode: 1, randomSpringCount: 4,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.05, edgeWaterFloor: 0.0, renderMode: 0,
+      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
     },
   };
   const preset = presets[name] || presets.paper_balanced;
@@ -1908,6 +1946,9 @@ function clearAll() {
   state.gpuStats = null;
   state.sourcePoints = [];
   state.sourceFileName = '';
+  state.simReady = false;
+  state.simulationLoading = false;
+  state.workerWarming = false;
   state.cameraPosX = DEFAULT_CAMERA_POS_X;
   state.cameraPosY = DEFAULT_CAMERA_POS_Y;
   state.cameraPosZ = DEFAULT_CAMERA_POS_Z;
@@ -1993,7 +2034,20 @@ function updateStatus(extra = '') {
   const parts = [];
   if (extra) parts.push(extra);
   parts.push(state.sourceFile ? `image: ${state.sourceFileName || 'loaded'}` : 'image: none');
-  parts.push(`webgpu: ${state.workerReady ? 'ready' : 'idle'}`);
+  if (!state.workerReady) {
+    parts.push('webgpu: idle');
+  } else if (state.workerWarming) {
+    parts.push('webgpu: warming');
+  } else {
+    parts.push('webgpu: worker ready');
+  }
+  if (state.simulationLoading) {
+    parts.push('dem: loading');
+  } else if (state.simReady) {
+    parts.push('dem: ready');
+  } else if (state.sourceFile || state.layerSourceFiles.some(Boolean)) {
+    parts.push('dem: not rendered');
+  }
   if (state.running) parts.push('sim: running');
   statusLine.textContent = parts.join('  |  ');
 }
