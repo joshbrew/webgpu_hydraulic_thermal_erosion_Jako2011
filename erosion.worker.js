@@ -1,4 +1,6 @@
 import WebGPUTerrainErosion from './WebGPUTerrainErosion.js';
+import { generateTerrainExample, seedTerrainExampleSources, TERRAIN_EXAMPLES } from './terrainExamples.js';
+import BatchPacer from './BatchPacer.js';
 
 let gpu = null;
 let offscreenCanvas = null;
@@ -9,17 +11,27 @@ let lastFrameAt = 0;
 let lastFrameMs = 0;
 let lastStatusPostAt = 0;
 let lastRenderAt = 0;
-let lastGpuBenchAt = 0;
+let loopGeneration = 0;
+const pendingFrames = new Set();
 let loopIterationsPerFrame = 5;
+let autoBatch = false;
+let pacingRevision = 0;
+const batchPacer = new BatchPacer();
 let simulationParams = {};
 let sourceRaster = null;
 let sourceImageInfo = null;
 let gpuInitPromise = null;
+let mesh = null, meshBusy = false, waterRunning = false;
+let MeshPostProcessClass = null;
+
+function meshState() { return { info:mesh?.info||null,view:mesh?.view||null,busy:meshBusy,waterRunning,waterSteps:mesh?.swe?.steps||0 }; }
+function discardMesh() { waterRunning=false;mesh?.destroy();mesh=null; }
+function renderCurrent() { if(mesh?.renderer)mesh.render();else gpu?.render(); }
 
 const hasWorkerRAF = typeof self.requestAnimationFrame === 'function';
 const workerRAF = hasWorkerRAF
   ? (cb) => self.requestAnimationFrame(cb)
-  : (cb) => self.setTimeout(() => cb(performance.now()), 0);
+  : (cb) => self.setTimeout(() => cb(performance.now()), 16);
 const workerCAF = hasWorkerRAF
   ? (id) => self.cancelAnimationFrame(id)
   : (id) => self.clearTimeout(id);
@@ -28,6 +40,9 @@ function cloneStats(stats) {
   if (!stats) return null;
   return {
     ...stats,
+    autoBatch,
+    actualIterationsPerFrame: autoBatch ? batchPacer.steps : loopIterationsPerFrame,
+    inFlightFrames: pendingFrames.size,
     terrainRange: stats.terrainRange ? { ...stats.terrainRange } : null,
     waterRange: stats.waterRange ? { ...stats.waterRange } : null,
     sedimentRange: stats.sedimentRange ? { ...stats.sedimentRange } : null,
@@ -50,6 +65,7 @@ function postStatus(force = false) {
     gpuReady: !!gpu,
     simReady: !!stats?.ready,
     sourceImageInfo: force ? sourceImageInfo : undefined,
+    mesh: meshState(),
   });
 }
 
@@ -111,6 +127,7 @@ function warmGpuInBackground() {
 function stopLoopInternal() {
   if (!running) return;
   running = false;
+  loopGeneration++;
   if (loopHandle) {
     workerCAF(loopHandle);
     loopHandle = 0;
@@ -124,6 +141,7 @@ function scheduleNextFrame() {
 }
 
 function getLoopRenderIntervalMs() {
+  if (autoBatch) return 0;
   const iterations = Math.max(1, loopIterationsPerFrame | 0);
   if (iterations <= 4) return 0;
   if (iterations <= 8) return 16;
@@ -133,6 +151,8 @@ function getLoopRenderIntervalMs() {
 
 async function frame(now) {
   if (!running) return;
+  const generation = loopGeneration;
+  loopHandle = 0;
   const currentGpu = gpu;
   if (!currentGpu?.ready) {
     scheduleNextFrame();
@@ -143,24 +163,34 @@ async function frame(now) {
   lastFrameAt = now;
 
   try {
-    const iterations = Math.max(1, loopIterationsPerFrame | 0);
+    // Keep two frames in flight to overlap CPU/GPU work without an unbounded
+    // command queue. Queue fences are for pacing, not per-pass GPU timings.
+    if (pendingFrames.size >= 2) {
+      await Promise.race(pendingFrames);
+      if (!running || generation !== loopGeneration || gpu !== currentGpu || !currentGpu.ready) return;
+    }
+    const iterations = autoBatch ? batchPacer.steps : loopIterationsPerFrame;
     const renderIntervalMs = getLoopRenderIntervalMs();
     const shouldRender = renderIntervalMs <= 0 || lastRenderAt <= 0 || (now - lastRenderAt) >= renderIntervalMs;
-    const shouldBenchmarkGpu = lastGpuBenchAt <= 0 || (now - lastGpuBenchAt) >= 1000;
-    if (shouldRender) {
-      if (shouldBenchmarkGpu) {
-        await currentGpu.stepAndRenderBench(iterations);
-        lastGpuBenchAt = now;
-      } else {
-        currentGpu.stepAndRender(iterations);
-      }
+    const submittedAt = performance.now();
+    const revision = pacingRevision;
+    if (waterRunning) {
+      mesh.stepWater(iterations);
       lastRenderAt = now;
-    } else if (shouldBenchmarkGpu) {
-      await currentGpu.stepBench(iterations);
-      lastGpuBenchAt = now;
+    } else if (shouldRender) {
+      currentGpu.stepAndRender(iterations);
+      lastRenderAt = now;
     } else {
       currentGpu.step(iterations);
     }
+    const completion = currentGpu.device.queue.onSubmittedWorkDone();
+    pendingFrames.add(completion);
+    void completion.then(() => {
+      pendingFrames.delete(completion);
+      if (autoBatch && running && generation === loopGeneration && revision === pacingRevision && gpu === currentGpu) {
+        batchPacer.observe(iterations, performance.now() - submittedAt);
+      }
+    }, () => pendingFrames.delete(completion));
     if (now - lastStatusPostAt >= 1000) {
       lastStatusPostAt = now;
       postStatus();
@@ -174,7 +204,7 @@ async function frame(now) {
     return;
   }
 
-  scheduleNextFrame();
+  if (running && generation === loopGeneration) scheduleNextFrame();
 }
 
 function reply(requestId, payload = {}, transfer = []) {
@@ -295,6 +325,7 @@ function resampleRasterBilinear(raster, scale) {
   const srcBands = Array.isArray(raster.bands) ? raster.bands : null;
   const dstBands = srcBands ? srcBands.map(() => new Float32Array(dstWidth * dstHeight)) : null;
   const dstValues = dstBands ? dstBands[0] : new Float32Array(dstWidth * dstHeight);
+  const dstWater = raster.water instanceof Float32Array ? new Float32Array(dstWidth * dstHeight) : null;
 
   function sampleArray(srcArray, px, py) {
     const x0 = Math.floor(px);
@@ -344,6 +375,7 @@ function resampleRasterBilinear(raster, scale) {
       const dstIndex = y * dstWidth + x;
       dstValues[dstIndex] = sampleArray(srcValues, srcX, srcY);
       dstMask[dstIndex] = sampleMask(srcX, srcY);
+      if (dstWater) dstWater[dstIndex] = sampleArray(raster.water, srcX, srcY);
       if (dstBands && srcBands) {
         for (let bandIndex = 1; bandIndex < dstBands.length; bandIndex++) {
           dstBands[bandIndex][dstIndex] = sampleArray(srcBands[bandIndex], srcX, srcY);
@@ -352,7 +384,7 @@ function resampleRasterBilinear(raster, scale) {
     }
   }
 
-  return { width: dstWidth, height: dstHeight, values: dstValues, mask: dstMask, bands: dstBands };
+  return { width: dstWidth, height: dstHeight, values: dstValues, mask: dstMask, bands: dstBands, water: dstWater };
 }
 
 function releaseRaster(raster) {
@@ -360,6 +392,7 @@ function releaseRaster(raster) {
   raster.values = null;
   raster.mask = null;
   raster.bands = null;
+  raster.water = null;
 }
 
 async function waitForGpuCompletion(currentGpu) {
@@ -369,6 +402,8 @@ async function waitForGpuCompletion(currentGpu) {
 }
 
 async function loadRasterIntoGpu(message) {
+  stopLoopInternal();
+  discardMesh();
   const currentGpu = await ensureGpu();
   if (Object.keys(simulationParams).length > 0) {
     currentGpu.setSimulationParams(simulationParams);
@@ -389,6 +424,7 @@ async function loadRasterIntoGpu(message) {
   const tessellation = Math.max(1, Math.floor(Number(message.tessellation) || 1));
   const raster = resampleRasterBilinear(sourceRaster, tessellation);
   await currentGpu.setDEM(raster, { ...(message.options || {}), demSourceMode });
+  seedTerrainExampleSources(currentGpu, raster, sourceImageInfo?.example);
   currentGpu.render();
   const stats = cloneStats(currentGpu.getStats());
   if (raster !== sourceRaster) {
@@ -408,6 +444,7 @@ self.onmessage = async (event) => {
   const { type, requestId } = message;
 
   try {
+    if(meshBusy && !['render','resize','setParams','getStatus','readbackStats'].includes(type))throw Error('Wait for the hydraulic mesh build to finish.');
     switch (type) {
       case 'init': {
         offscreenCanvas = message.canvas;
@@ -430,7 +467,7 @@ self.onmessage = async (event) => {
           dpr: Math.max(1, Number(message.dpr) || canvasMetrics.dpr || 1),
         };
         applyCanvasMetrics();
-        gpu?.render?.();
+        renderCurrent();
         reply(requestId, { resized: true });
         break;
       }
@@ -451,7 +488,19 @@ self.onmessage = async (event) => {
         break;
       }
 
+      case 'generateExample': {
+        stopLoopInternal();
+        const currentGpu = await ensureGpu();
+        sourceRaster = await generateTerrainExample(currentGpu.device, message.name, message.size, message.seed);
+        sourceImageInfo = { width: sourceRaster.width, height: sourceRaster.height, mode: 'single', example: message.name };
+        const payload = await loadRasterIntoGpu(message);
+        reply(requestId, { ...payload, exampleLabel: TERRAIN_EXAMPLES[message.name].label });
+        postStatus(true);
+        break;
+      }
+
       case 'setDEM': {
+        discardMesh();
         const currentGpu = await ensureGpu();
         if (Object.keys(simulationParams).length > 0) {
           currentGpu.setSimulationParams(simulationParams);
@@ -461,6 +510,7 @@ self.onmessage = async (event) => {
           width: raster.width | 0,
           height: raster.height | 0,
           values: raster.values instanceof Float32Array ? raster.values : new Float32Array(raster.values || []),
+          water: raster.water ? (raster.water instanceof Float32Array ? raster.water : new Float32Array(raster.water)) : null,
           mask: raster.mask ? (raster.mask instanceof Uint8Array ? raster.mask : new Uint8Array(raster.mask)) : null,
           bands: Array.isArray(raster.bands)
             ? raster.bands.map((band) => band instanceof Float32Array ? band : new Float32Array(band || []))
@@ -475,7 +525,7 @@ self.onmessage = async (event) => {
 
       case 'render': {
         if (gpu?.ready) {
-          gpu.render();
+          renderCurrent();
           if (message.waitForCompletion) {
             await waitForGpuCompletion(gpu);
           }
@@ -485,6 +535,7 @@ self.onmessage = async (event) => {
       }
 
       case 'step': {
+        discardMesh();
         if (gpu?.ready) {
           if (message.render !== false) {
             await gpu.stepAndRenderBench(Math.max(1, Number(message.iterations) || 1));
@@ -497,7 +548,7 @@ self.onmessage = async (event) => {
       }
 
       case 'readbackStats': {
-        const stats = cloneStats(gpu?.getStats?.() || null);
+        const stats = cloneStats(message.includeMass && gpu?.ready ? await gpu.readbackStats() : gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints(), lastFrameMs, running, sourceImageInfo });
         break;
       }
@@ -518,6 +569,7 @@ self.onmessage = async (event) => {
       }
 
       case 'paintTerrainBrush': {
+        discardMesh();
         if (!gpu?.ready) {
           throw new Error('Terrain painting is only available after the GPU sim is ready.');
         }
@@ -529,6 +581,7 @@ self.onmessage = async (event) => {
       }
 
       case 'paintSpringBrush': {
+        discardMesh();
         if (!gpu?.ready) {
           throw new Error('Spring painting is only available after the GPU sim is ready.');
         }
@@ -540,6 +593,7 @@ self.onmessage = async (event) => {
       }
 
       case 'clearPaintedSprings': {
+        discardMesh();
         if (gpu?.ready) {
           gpu.clearPaintedSprings();
         }
@@ -552,7 +606,7 @@ self.onmessage = async (event) => {
       case 'resetRainTimer': {
         if (gpu?.ready) {
           gpu.resetRainTimer();
-          gpu.render();
+          renderCurrent();
         }
         const stats = cloneStats(gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints() });
@@ -562,7 +616,7 @@ self.onmessage = async (event) => {
       case 'restartSources': {
         if (gpu?.ready) {
           gpu.resetRainTimer();
-          gpu.render();
+          renderCurrent();
         }
         const stats = cloneStats(gpu?.getStats?.() || null);
         reply(requestId, { stats, sourcePoints: getSourcePoints() });
@@ -570,33 +624,43 @@ self.onmessage = async (event) => {
       }
 
       case 'startLoop': {
+        if(!message.meshWater)discardMesh();
+        const previousIterations = loopIterationsPerFrame;
+        const previousAutoBatch = autoBatch;
         if (Number.isFinite(message.iterationsPerFrame)) {
-          loopIterationsPerFrame = Math.max(1, Number(message.iterationsPerFrame) | 0);
+          loopIterationsPerFrame = Math.max(1, Math.min(256, Math.floor(message.iterationsPerFrame)));
+        }
+        if (typeof message.autoBatch === 'boolean') autoBatch = message.autoBatch;
+        if (!running || autoBatch !== previousAutoBatch || loopIterationsPerFrame !== previousIterations) {
+          pacingRevision++;
+          batchPacer.reset(loopIterationsPerFrame);
         }
         if (!running) {
           running = true;
           lastFrameAt = 0;
           lastStatusPostAt = 0;
           lastRenderAt = 0;
-          lastGpuBenchAt = 0;
+          loopGeneration++;
           scheduleNextFrame();
         }
-        reply(requestId, { running: true, iterationsPerFrame: loopIterationsPerFrame });
+        reply(requestId, { running: true, iterationsPerFrame: loopIterationsPerFrame, autoBatch });
         break;
       }
 
       case 'stopLoop': {
         stopLoopInternal();
+        waterRunning=false;
         if (gpu?.ready) {
-          gpu.render();
+          renderCurrent();
         }
-        reply(requestId, { running: false });
+        reply(requestId, { running: false, mesh:meshState() });
         postStatus(true);
         break;
       }
 
       case 'clear': {
         stopLoopInternal();
+        discardMesh();
         if (gpu) {
           gpu.destroy();
           gpu = null;
@@ -616,12 +680,14 @@ self.onmessage = async (event) => {
           lastFrameMs,
           running,
           sourceImageInfo,
+          mesh:meshState(),
         });
         break;
       }
 
       case 'destroy': {
         stopLoopInternal();
+        discardMesh();
         if (gpu) {
           gpu.destroy();
           gpu = null;
@@ -634,6 +700,31 @@ self.onmessage = async (event) => {
         break;
       }
 
+      case 'buildMesh': {
+        if(running || !gpu?.ready)throw Error('Pause the simulation before building its hydraulic mesh.');
+        meshBusy=true;postStatus(true);
+        try {await waitForGpuCompletion(gpu);
+          MeshPostProcessClass??=(await import('./MeshPostProcess.js')).default;
+          mesh??=new MeshPostProcessClass(gpu,message=>self.postMessage({type:'meshProgress',message}),{execution:'local'});
+          await mesh.build(message.options);reply(requestId,{mesh:meshState()});
+        }finally{meshBusy=false;postStatus(true);}
+        break;
+      }
+      case 'meshView': {
+        mesh?.render(message.view);reply(requestId,{mesh:meshState()});break;
+      }
+      case 'meshWater': {
+        if(!mesh?.renderer || meshBusy)throw Error('Build a paused hydraulic mesh first.');
+        if(message.action==='pause'){stopLoopInternal();waterRunning=false;}
+        else if(message.action==='reset'){stopLoopInternal();waterRunning=false;mesh.resetWater();}
+        else {if(running&&!waterRunning)throw Error('Pause erosion first.');await mesh.startWater(message.options);waterRunning=true;
+          autoBatch=true;batchPacer.reset(8);if(!running){running=true;loopGeneration++;lastFrameAt=0;scheduleNextFrame();}}
+        reply(requestId,{mesh:meshState(),running});postStatus(true);break;
+      }
+      case 'meshWaterStats': {
+        const water=mesh?.swe?await mesh.swe.readStats():null;
+        reply(requestId,{water});break;
+      }
       default:
         throw new Error(`Unknown worker message type: ${String(type)}`);
     }

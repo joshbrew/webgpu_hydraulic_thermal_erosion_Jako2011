@@ -42,12 +42,45 @@ struct RenderVertexOut {
   @location(7) mask: f32,
   @location(8) worldPos: vec3<f32>,
   @location(9) gridPos: vec2<f32>,
+  @location(10) materialColor: vec3<f32>,
+  @location(11) cavity: f32,
+  @location(12) flow: vec3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> renderParams: RenderParams;
 @group(0) @binding(1) var<storage, read> renderState: StateBuffer;
 @group(0) @binding(2) var sceneSampler: sampler;
 @group(0) @binding(3) var sceneTexture: texture_2d<f32>;
+struct LayerTops { values: array<vec4<f32>> }
+struct LayerMaterials { layers: array<vec4<f32>, 4> }
+@group(0) @binding(4) var<storage, read> renderLayerTops: LayerTops;
+@group(0) @binding(5) var<uniform> renderLayerMaterials: LayerMaterials;
+struct Velocities { values: array<vec4<f32>> }
+@group(0) @binding(6) var<storage, read> renderVelocity: Velocities;
+
+fn exposedMaterialColor(i: u32, terrain: f32) -> vec3<f32> {
+  if (renderParams.cameraPos.w < 0.5) { return vec3<f32>(0.51, 0.45, 0.34); }
+  let tops = renderLayerTops.values[i];
+  var chosen = 0u;
+  var bestAbove = 1e30;
+  var highest = -1e30;
+  var highestIndex = 0u;
+  var found = false;
+  for (var layer = 0u; layer < 4u; layer++) {
+    if (renderLayerMaterials.layers[layer].z < 0.5 || tops[layer] < -1e8) { continue; }
+    if (tops[layer] >= highest) { highest = tops[layer]; highestIndex = layer; }
+    if (tops[layer] >= terrain && tops[layer] <= bestAbove) {
+      bestAbove = tops[layer]; chosen = layer; found = true;
+    }
+  }
+  if (!found) { chosen = highestIndex; }
+  switch chosen {
+    case 0u: { return vec3<f32>(0.61, 0.54, 0.40); }
+    case 1u: { return vec3<f32>(0.52, 0.40, 0.28); }
+    case 2u: { return vec3<f32>(0.43, 0.44, 0.40); }
+    default: { return vec3<f32>(0.29, 0.31, 0.30); }
+  }
+}
 
 fn idx(x: u32, y: u32) -> u32 {
   return y * u32(renderParams.dims.x) + x;
@@ -62,14 +95,14 @@ fn renderStateAt(x: i32, y: i32) -> CellState {
 }
 
 fn renderTerrainHeightAt(x: i32, y: i32) -> f32 {
-  return clamp(finiteOr(renderStateAt(x, y).terrain, 0.0), 0.0, 1.2) * renderParams.dims.w;
+  return max(finiteOr(renderStateAt(x, y).terrain, 0.0), 0.0) * renderParams.dims.w;
 }
 
 fn renderWaterDepthAt(x: i32, y: i32) -> f32 {
-  return clamp(finiteOr(renderStateAt(x, y).water, 0.0), 0.0, 1.2) * renderParams.misc.y;
+  return max(finiteOr(renderStateAt(x, y).water, 0.0), 0.0) * renderParams.misc.y;
 }
 
-fn renderNormal(x: i32, y: i32) -> vec3<f32> {
+fn renderRelief(x: i32, y: i32, centerHeight: f32) -> vec4<f32> {
   let worldScale = max(renderParams.misc.x, 1e-5);
   let tl = renderTerrainHeightAt(x - 1, y - 1);
   let tc = renderTerrainHeightAt(x, y - 1);
@@ -79,145 +112,17 @@ fn renderNormal(x: i32, y: i32) -> vec3<f32> {
   let bl = renderTerrainHeightAt(x - 1, y + 1);
   let bc = renderTerrainHeightAt(x, y + 1);
   let br = renderTerrainHeightAt(x + 1, y + 1);
-  let inv = 1.0 / max(16.0 * worldScale, 1e-5);
-  let dzdx = ((tr + 10.0 * mr + br) - (tl + 10.0 * ml + bl)) * inv;
-  let dzdz = ((tl + 10.0 * tc + tr) - (bl + 10.0 * bc + br)) * inv;
-  return normalize(vec3<f32>(-dzdx, 1.0, -dzdz));
+  let inv = 1.0 / max(32.0 * worldScale, 1e-5);
+  let dzdx = ((3.0 * tr + 10.0 * mr + 3.0 * br) - (3.0 * tl + 10.0 * ml + 3.0 * bl)) * inv;
+  let dzdz = ((3.0 * tl + 10.0 * tc + 3.0 * tr) - (3.0 * bl + 10.0 * bc + 3.0 * br)) * inv;
+  let cavity = clamp((ml + mr + tc + bc - 4.0 * centerHeight) / worldScale * 1.8, -1.0, 1.0);
+  return vec4<f32>(normalize(vec3<f32>(-dzdx, 1.0, -dzdz)), cavity);
 }
 
-fn renderWaterLevelAt(x: i32, y: i32) -> f32 {
-  let centerWater = renderWaterDepthAt(x, y);
-  let leftWater = renderWaterDepthAt(x - 1, y);
-  let rightWater = renderWaterDepthAt(x + 1, y);
-  let upWater = renderWaterDepthAt(x, y - 1);
-  let downWater = renderWaterDepthAt(x, y + 1);
-  let smoothedWater = centerWater * 0.58 + (leftWater + rightWater + upWater + downWater) * 0.105;
-  let cappedWater = min(max(smoothedWater, 0.0), centerWater * 1.16 + 0.0060);
-  return max(cappedWater, 0.0);
-}
-
-fn renderRawWaterSurfaceAt(x: i32, y: i32) -> f32 {
-  return renderTerrainHeightAt(x, y) + renderWaterLevelAt(x, y);
-}
-
+// Display the solver's water surface. Smoothing depth across unequal terrain
+// creates artificial waves in a resting lake and spills water onto dry cells.
 fn renderWaterSurfaceAt(x: i32, y: i32) -> f32 {
-  let centerTerrain = renderTerrainHeightAt(x, y);
-  let centerDepth = renderWaterLevelAt(x, y);
-  if (centerDepth <= 1e-6) {
-    return centerTerrain;
-  }
-
-  let leftDepth = renderWaterLevelAt(x - 1, y);
-  let rightDepth = renderWaterLevelAt(x + 1, y);
-  let upDepth = renderWaterLevelAt(x, y - 1);
-  let downDepth = renderWaterLevelAt(x, y + 1);
-
-  let leftWeight = smoothstep(0.0003, 0.0060, leftDepth) * 0.70;
-  let rightWeight = smoothstep(0.0003, 0.0060, rightDepth) * 0.70;
-  let upWeight = smoothstep(0.0003, 0.0060, upDepth) * 0.70;
-  let downWeight = smoothstep(0.0003, 0.0060, downDepth) * 0.70;
-
-  let centerSurface = renderRawWaterSurfaceAt(x, y);
-  let sum = centerSurface * 2.4 +
-    renderRawWaterSurfaceAt(x - 1, y) * leftWeight +
-    renderRawWaterSurfaceAt(x + 1, y) * rightWeight +
-    renderRawWaterSurfaceAt(x, y - 1) * upWeight +
-    renderRawWaterSurfaceAt(x, y + 1) * downWeight;
-  let weight = 2.4 + leftWeight + rightWeight + upWeight + downWeight;
-  let smoothedSurface = sum / max(weight, 1e-6);
-  let minSurface = centerTerrain + centerDepth * 0.22;
-  let maxSurface = centerSurface + 0.0030;
-  return clamp(smoothedSurface, minSurface, maxSurface);
-}
-
-fn renderDisplayedWaterDepthAt(x: i32, y: i32) -> f32 {
-  return max(renderWaterSurfaceAt(x, y) - renderTerrainHeightAt(x, y), 0.0);
-}
-
-fn renderWaterDepthBilinear(pos: vec2<f32>) -> f32 {
-  let maxX = max(renderParams.dims.x - 1.001, 0.0);
-  let maxY = max(renderParams.dims.y - 1.001, 0.0);
-  let px = clamp(pos.x, 0.0, maxX);
-  let py = clamp(pos.y, 0.0, maxY);
-  let x0 = i32(floor(px));
-  let y0 = i32(floor(py));
-  let x1 = x0 + 1;
-  let y1 = y0 + 1;
-  let tx = fract(px);
-  let ty = fract(py);
-  let h00 = renderDisplayedWaterDepthAt(x0, y0);
-  let h10 = renderDisplayedWaterDepthAt(x1, y0);
-  let h01 = renderDisplayedWaterDepthAt(x0, y1);
-  let h11 = renderDisplayedWaterDepthAt(x1, y1);
-  let a = mix(h00, h10, tx);
-  let b = mix(h01, h11, tx);
-  return mix(a, b, ty);
-}
-
-fn renderWaterSurfaceBilinear(pos: vec2<f32>) -> f32 {
-  let maxX = max(renderParams.dims.x - 1.001, 0.0);
-  let maxY = max(renderParams.dims.y - 1.001, 0.0);
-  let px = clamp(pos.x, 0.0, maxX);
-  let py = clamp(pos.y, 0.0, maxY);
-  let x0 = i32(floor(px));
-  let y0 = i32(floor(py));
-  let x1 = x0 + 1;
-  let y1 = y0 + 1;
-  let tx = fract(px);
-  let ty = fract(py);
-  let h00 = renderWaterSurfaceAt(x0, y0);
-  let h10 = renderWaterSurfaceAt(x1, y0);
-  let h01 = renderWaterSurfaceAt(x0, y1);
-  let h11 = renderWaterSurfaceAt(x1, y1);
-  let a = mix(h00, h10, tx);
-  let b = mix(h01, h11, tx);
-  return mix(a, b, ty);
-}
-
-fn renderWaterNormalAtPos(pos: vec2<f32>) -> vec3<f32> {
-  let worldScale = max(renderParams.misc.x, 1e-5);
-  let dx = vec2<f32>(1.0, 0.0);
-  let dy = vec2<f32>(0.0, 1.0);
-  let hL = renderWaterSurfaceBilinear(pos - dx);
-  let hR = renderWaterSurfaceBilinear(pos + dx);
-  let hU = renderWaterSurfaceBilinear(pos - dy);
-  let hD = renderWaterSurfaceBilinear(pos + dy);
-  let dzdx = (hR - hL) / max(2.0 * worldScale, 1e-5);
-  let dzdz = (hU - hD) / max(2.0 * worldScale, 1e-5);
-  return normalize(vec3<f32>(-dzdx * 20.0, 1.0, -dzdz * 20.0));
-}
-
-fn renderWaterMicroNormalAtPos(pos: vec2<f32>) -> vec3<f32> {
-  let worldScale = max(renderParams.misc.x, 1e-5);
-  let dx = vec2<f32>(0.30, 0.0);
-  let dy = vec2<f32>(0.0, 0.30);
-  let hL = renderWaterSurfaceBilinear(pos - dx);
-  let hR = renderWaterSurfaceBilinear(pos + dx);
-  let hU = renderWaterSurfaceBilinear(pos - dy);
-  let hD = renderWaterSurfaceBilinear(pos + dy);
-  let dzdx = (hR - hL) / max(0.60 * worldScale, 1e-5);
-  let dzdz = (hU - hD) / max(0.60 * worldScale, 1e-5);
-  return normalize(vec3<f32>(-dzdx * 34.0, 1.0, -dzdz * 34.0));
-}
-
-fn renderWaterNormal(x: i32, y: i32) -> vec3<f32> {
-  let worldScale = max(renderParams.misc.x, 1e-5);
-  let tl = renderWaterSurfaceAt(x - 1, y - 1);
-  let tc = renderWaterSurfaceAt(x, y - 1);
-  let tr = renderWaterSurfaceAt(x + 1, y - 1);
-  let ml = renderWaterSurfaceAt(x - 1, y);
-  let mr = renderWaterSurfaceAt(x + 1, y);
-  let bl = renderWaterSurfaceAt(x - 1, y + 1);
-  let bc = renderWaterSurfaceAt(x, y + 1);
-  let br = renderWaterSurfaceAt(x + 1, y + 1);
-  let inv = 1.0 / max(16.0 * worldScale, 1e-5);
-  let dzdx = ((tr + 10.0 * mr + br) - (tl + 10.0 * ml + bl)) * inv;
-  let dzdz = ((tl + 10.0 * tc + tr) - (bl + 10.0 * bc + br)) * inv;
-  return normalize(vec3<f32>(-dzdx, 1.0, -dzdz));
-}
-
-fn sampleSceneColor(uv: vec2<f32>) -> vec3<f32> {
-  return textureSampleLevel(sceneTexture, sceneSampler, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).rgb;
+  return renderTerrainHeightAt(x, y) + renderWaterDepthAt(x, y);
 }
 
 fn cornerCoord(localVertex: u32) -> vec2<u32> {
@@ -239,9 +144,10 @@ fn vsMesh(
   var out: RenderVertexOut;
   let width = u32(renderParams.dims.x);
   let height = u32(renderParams.dims.y);
-  let cellsWide = max(width - 1u, 1u);
-  let cellX = instanceIndex % cellsWide;
-  let cellY = instanceIndex / cellsWide;
+  let meshStep = max(u32(renderParams.lightDir.w), 1u);
+  let cellsWide = max((width - 1u + meshStep - 1u) / meshStep, 1u);
+  let cellX = (instanceIndex % cellsWide) * meshStep;
+  let cellY = (instanceIndex / cellsWide) * meshStep;
   if (cellY >= max(height - 1u, 1u)) {
     out.position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
     out.normal = vec3<f32>(0.0, 1.0, 0.0);
@@ -254,12 +160,14 @@ fn vsMesh(
     out.mask = 0.0;
     out.worldPos = vec3<f32>(0.0);
     out.gridPos = vec2<f32>(0.0);
+    out.materialColor = vec3<f32>(0.0);
+    out.cavity = 0.0;
     return out;
   }
 
   let corner = cornerCoord(vertexIndex % 6u);
-  let gx = cellX + corner.x;
-  let gy = cellY + corner.y;
+  let gx = min(cellX + corner.x * meshStep, width - 1u);
+  let gy = min(cellY + corner.y * meshStep, height - 1u);
   let cell = renderState.cells[idx(gx, gy)];
   let halfW = (renderParams.dims.x - 1.0) * 0.5;
   let halfH = (renderParams.dims.y - 1.0) * 0.5;
@@ -270,11 +178,18 @@ fn vsMesh(
   let waterSurfaceY = renderWaterSurfaceAt(i32(gx), i32(gy));
   let waterY = max(waterSurfaceY - terrainY, 0.0);
   let waterPass = renderParams.misc.z > 0.5;
-  let waterLift = max(waterY - 0.0002, 0.0);
-  let worldY = select(terrainY, terrainY + waterLift, waterPass && waterY > 1e-6);
+  let worldY = select(terrainY, waterSurfaceY, waterPass);
 
   out.position = renderParams.viewProj * vec4<f32>(worldX, worldY, worldZ, 1.0);
-  out.normal = renderNormal(i32(gx), i32(gy));
+  out.normal = vec3<f32>(0.0, 1.0, 0.0);
+  out.cavity = 0.0;
+  out.materialColor = vec3<f32>(0.51, 0.45, 0.34);
+  if (!waterPass) {
+    let relief = renderRelief(i32(gx), i32(gy), terrainY);
+    out.normal = relief.xyz;
+    out.cavity = relief.w;
+    out.materialColor = exposedMaterialColor(idx(gx, gy), cell.terrain);
+  }
   out.terrain = finiteOr(cell.terrain, 0.0);
   out.water = finiteOr(waterY / max(renderParams.misc.y, 1e-6), 0.0);
   out.sediment = finiteOr(cell.sediment, 0.0);
@@ -284,17 +199,27 @@ fn vsMesh(
   out.mask = cell.mask;
   out.worldPos = vec3<f32>(worldX, worldY, worldZ);
   out.gridPos = vec2<f32>(f32(gx), f32(gy));
+  out.flow = vec3<f32>(0.0);
+  if (waterPass && renderParams.shading.z == 9.0) {
+    let v = renderVelocity.values[idx(gx, gy)];
+    out.flow = vec3<f32>(v.xy, v.w);
+  }
   return out;
 }
 
 @fragment
 fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
+  // Derivatives of the displayed surface avoid repeated per-pixel storage
+  // reads and keep reflections consistent with the actual water geometry.
+  let faceNormal = cross(dpdx(in.worldPos), dpdy(in.worldPos));
+  let faceLength = max(length(faceNormal), 1e-12);
+  let waterNormal = faceNormal / faceLength * select(-1.0, 1.0, faceNormal.y >= 0.0);
   if (in.mask < 0.5) {
     return vec4<f32>(0.03, 0.04, 0.07, 1.0);
   }
 
   let waterPass = renderParams.misc.z > 0.5;
-  let terrainNormal = normalize(vec3<f32>(in.normal.x, max(in.normal.y, 0.35), in.normal.z));
+  let terrainNormal = normalize(mix(in.normal, waterNormal, 0.2));
   let lambert = clamp(dot(terrainNormal, normalize(renderParams.lightDir.xyz)), 0.0, 1.0);
   let hemi = 0.80 + 0.20 * clamp(terrainNormal.y * 0.5 + 0.5, 0.0, 1.0);
 
@@ -308,11 +233,26 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
   let contour = 0.92 + 0.08 * abs(sin(h * 44.0));
   let terrainColor = clamp(litTopo * contour, vec3<f32>(0.0), vec3<f32>(1.0));
 
-  let shorelineFade = smoothstep(0.010, 0.080, in.water);
-  let waterAlpha = clamp(in.water * shorelineFade * max(renderParams.shading.x * 2.6, 0.0), 0.0, 0.97);
+  let shorelineFade = smoothstep(0.0002, 0.004, in.water);
+  // Depth-dependent absorption keeps shallow rivers visible while leaving
+  // thin wet films and dry shore cells transparent.
+  let waterAlpha = clamp((1.0 - exp(-in.water * max(renderParams.shading.x, 0.0) * 96.0)) * shorelineFade, 0.0, 0.97);
   let mode = i32(round(renderParams.shading.z));
 
   if (waterPass) {
+    if (mode == 9) {
+      let wet = smoothstep(0.0002, 0.0015, in.water);
+      let speed = length(in.flow.xy);
+      let direction = in.flow.xy / max(speed, 1e-6);
+      let tile = fract(in.gridPos / 6.0) - 0.5;
+      let along = dot(tile, direction);
+      let across = abs(dot(tile, vec2<f32>(-direction.y, direction.x)));
+      let stem = select(0.0, 1.0, along > -0.28 && along < 0.13 && across < 0.028);
+      let head = select(0.0, 1.0, along > 0.02 && along < 0.29 && across < (0.29 - along) * 0.7);
+      let arrow = max(stem, head) * smoothstep(0.02, 0.15, speed) * smoothstep(1e-5, 0.001, in.flow.z);
+      let flowColor = mix(vec3<f32>(0.025, 0.22, 0.34), vec3<f32>(0.24, 0.60, 0.72), clamp(speed * 0.25, 0.0, 1.0));
+      return vec4<f32>(mix(flowColor, vec3<f32>(0.88, 0.99, 1.0), arrow), wet * 0.88);
+    }
     if (waterAlpha <= max(renderParams.misc.w, 0.01)) {
       return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
@@ -320,13 +260,9 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
     let s = clamp(in.sediment * renderParams.shading.y * 2.7, 0.0, 1.0);
     let viewDir = normalize(renderParams.cameraPos.xyz - in.worldPos);
     let lightDir = normalize(renderParams.lightDir.xyz);
-    let macroNormal = renderWaterNormalAtPos(in.gridPos);
-    let microNormal = renderWaterMicroNormalAtPos(in.gridPos);
-    let combinedNormal = normalize(vec3<f32>(
-      macroNormal.x * 1.10 + microNormal.x * 1.90,
-      max(macroNormal.y * 0.65 + microNormal.y, 0.12),
-      macroNormal.z * 1.10 + microNormal.z * 1.90
-    ));
+    let phase = renderParams.timeData.x;
+    let ripple = vec2<f32>(sin(in.worldPos.x * 95.0 + phase * 1.7), cos(in.worldPos.z * 87.0 - phase * 1.3)) * 0.008;
+    let combinedNormal = normalize(waterNormal + vec3<f32>(ripple.x, 0.0, ripple.y));
     let ndv = clamp(dot(combinedNormal, viewDir), 0.0, 1.0);
     let fresnel = pow(1.0 - ndv, 3.8);
     let sunFacing = clamp(dot(combinedNormal, lightDir), 0.0, 1.0);
@@ -395,59 +331,31 @@ fn fsMesh(in: RenderVertexOut) -> @location(0) vec4<f32> {
     let diagColor = select(mix(terrainColor * 0.18, depositionColor, mag), mix(terrainColor * 0.18, erosionColor, mag), signedHistory < 0.0);
     return vec4<f32>(diagColor, 1.0);
   }
+  let slope = length(terrainNormal.xz);
+  let steepness = smoothstep(0.1, 0.88, slope);
+  let reliefLight = (0.24 + 0.64 * lambert + 0.12 * hemi) * (1.0 - 0.2 * max(in.cavity, 0.0) + 0.05 * max(-in.cavity, 0.0));
+  if (mode == 8 || mode == 9) {
+    let slopeColor = mix(mix(vec3<f32>(0.38, 0.47, 0.29), vec3<f32>(0.72, 0.57, 0.34), smoothstep(0.05, 0.55, slope)), vec3<f32>(0.45, 0.40, 0.37), smoothstep(0.55, 0.93, slope));
+    return vec4<f32>(slopeColor * reliefLight, 1.0);
+  }
   if (mode == 7) {
-    let signedHistory = clamp(in.history, -1.0, 1.0);
-    let erosion = smoothstep(0.02, 0.72, max(-signedHistory, 0.0));
-    let deposition = smoothstep(0.02, 0.72, max(signedHistory, 0.0));
-    let thermal = clamp(in.thermal, 0.0, 1.0);
-    let steepness = pow(1.0 - clamp(terrainNormal.y, 0.0, 1.0), 0.68);
-    let lowland = 1.0 - smoothstep(0.14, 0.60, h);
-    let waterPresence = smoothstep(0.0, 0.05, in.water);
-    let lowElevationMarine = (1.0 - smoothstep(0.05, 0.30, h)) * mix(0.40, 1.0, waterPresence);
-    let shoalBand = smoothstep(0.03, 0.15, h) * (1.0 - smoothstep(0.15, 0.30, h));
-    let beachBand = smoothstep(0.10, 0.23, h) * (1.0 - smoothstep(0.23, 0.40, h));
-    let settledActivity = clamp(deposition * (0.70 + 0.35 * lowland) + thermal * (0.34 + 0.18 * lowland), 0.0, 1.0);
-
-    var natural = mix(vec3<f32>(0.18, 0.24, 0.15), vec3<f32>(0.42, 0.38, 0.22), smoothstep(0.10, 0.52, h));
-    natural = mix(natural, vec3<f32>(0.68, 0.61, 0.50), smoothstep(0.56, 0.96, h));
-
-    let soilColor = mix(vec3<f32>(0.22, 0.50, 0.20), vec3<f32>(0.52, 0.46, 0.24), smoothstep(0.18, 0.82, h));
-    let fertileLowlandColor = vec3<f32>(0.18, 0.56, 0.20);
-    let riparianColor = vec3<f32>(0.12, 0.48, 0.22);
-    let alluviumColor = mix(vec3<f32>(0.54, 0.58, 0.20), vec3<f32>(0.82, 0.66, 0.28), smoothstep(0.22, 0.72, h));
-    let colluviumColor = vec3<f32>(0.58, 0.46, 0.28);
-    let rockColor = mix(vec3<f32>(0.30, 0.28, 0.25), vec3<f32>(0.78, 0.74, 0.68), smoothstep(0.24, 0.92, steepness));
-    let deepMarineColor = vec3<f32>(0.01, 0.12, 0.56);
-    let shallowMarineColor = vec3<f32>(0.04, 0.90, 0.96);
-    let shoalOrangeColor = vec3<f32>(1.00, 0.62, 0.06);
-    let marineColor = mix(deepMarineColor, shallowMarineColor, smoothstep(0.03, 0.18, h));
-
-    let soilBuild = clamp(deposition * (0.68 + 0.30 * lowland) + thermal * 0.20 - steepness * 0.24, 0.0, 1.0);
-    let alluvium = clamp(deposition * (0.54 + 0.42 * lowland) + thermal * 0.14, 0.0, 1.0);
-    let colluvium = clamp(thermal * (0.52 + 0.60 * steepness) + deposition * 0.18, 0.0, 1.0);
-    let exposedRock = clamp(erosion * 0.94 + steepness * 0.54 - deposition * 0.26, 0.0, 1.0);
-    let fertilePlain = clamp(settledActivity * lowland * (1.0 - steepness) * (1.0 - 0.45 * waterPresence), 0.0, 1.0);
-    let riparian = clamp((0.24 + 0.76 * settledActivity) * lowland * (1.0 - steepness) * smoothstep(0.0, 0.10, in.water), 0.0, 1.0);
-    let foothillGreen = clamp(settledActivity * (1.0 - lowland) * (1.0 - steepness) * 0.34, 0.0, 1.0);
-
-    natural = mix(natural, marineColor, lowElevationMarine * 0.82);
-    natural = mix(natural, shoalOrangeColor, shoalBand * (0.18 + 0.16 * lowland + 0.10 * deposition));
-    natural = mix(natural, shoalOrangeColor * vec3<f32>(1.0, 0.90, 0.68), beachBand * (0.10 + 0.08 * deposition));
-    natural = mix(natural, soilColor, soilBuild * 0.58);
-    natural = mix(natural, alluviumColor, alluvium * 0.44);
-    natural = mix(natural, colluviumColor, colluvium * 0.38);
-    natural = mix(natural, fertileLowlandColor, fertilePlain * 0.74);
-    natural = mix(natural, riparianColor, riparian * 0.62);
-    natural = mix(natural, vec3<f32>(0.38, 0.54, 0.26), foothillGreen * 0.24);
-    natural = mix(natural, rockColor, exposedRock);
-
-    let matteLambert = 0.60 + 0.28 * lambert + 0.22 * hemi;
-    let microContour = 0.95 + 0.05 * abs(sin(h * 30.0 + signedHistory * 8.0 + thermal * 6.0));
-    var naturalColor = clamp(natural * matteLambert * microContour, vec3<f32>(0.0), vec3<f32>(1.0));
-    let luma = dot(naturalColor, vec3<f32>(0.299, 0.587, 0.114));
-    naturalColor = mix(vec3<f32>(luma), naturalColor, 1.18);
-    naturalColor = pow(clamp(naturalColor, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.94));
-    return vec4<f32>(clamp(naturalColor, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    let erosion = smoothstep(0.03, 0.85, max(-in.history, 0.0));
+    let deposition = smoothstep(0.03, 0.85, max(in.history, 0.0));
+    let moisture = smoothstep(0.0005, 0.035, in.water);
+    let lowland = 1.0 - smoothstep(0.18, 0.65, h);
+    let vegetation = moisture * lowland * (1.0 - steepness) * 0.38;
+    let soil = mix(vec3<f32>(0.40, 0.35, 0.26), vec3<f32>(0.55, 0.49, 0.39), smoothstep(0.18, 0.85, h));
+    let rock = mix(vec3<f32>(0.36, 0.34, 0.31), vec3<f32>(0.61, 0.59, 0.54), h);
+    let alluvium = vec3<f32>(0.55, 0.45, 0.31);
+    let stratum = mix(soil, in.materialColor, select(0.0, 0.7, renderParams.cameraPos.w > 0.5));
+    let slopeTint = mix(vec3<f32>(0.64, 0.50, 0.33), rock * 0.86, smoothstep(0.45, 0.9, slope));
+    var natural = mix(stratum, slopeTint, steepness * 0.48 + erosion * 0.12);
+    natural = mix(natural, alluvium, deposition * (1.0 - steepness) * 0.55);
+    natural = mix(natural, vec3<f32>(0.25, 0.33, 0.21), vegetation);
+    natural *= 1.0 - moisture * 0.18;
+    // Subtle spatial grain, without height bands or diagnostic history stripes.
+    let grain = 0.98 + 0.04 * fract(sin(dot(in.worldPos.xz, vec2<f32>(127.1, 311.7))) * 43758.5453);
+    return vec4<f32>(clamp(natural * reliefLight * grain, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
   }
 
   return vec4<f32>(terrainColor, 1.0);

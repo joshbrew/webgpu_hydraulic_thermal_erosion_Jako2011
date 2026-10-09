@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Erode → final mesh</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101820;color:#e5edf0;font:15px/1.5 system-ui}header{padding:20px 28px;border-bottom:1px solid #30424e}h1{margin:0;font-size:24px}header p{margin:6px 0;color:#a9bdc9}a{color:#92d4d2}main{display:grid;grid-template-columns:300px minmax(0,1fr);gap:20px;padding:20px 28px}aside{display:flex;flex-direction:column;gap:14px}fieldset{margin:0;border:1px solid #344b58;border-radius:10px;padding:14px}legend{font-weight:600;color:#bdd8dc;padding:0 6px}label{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:8px 0}input[type=number]{width:90px}select{max-width:175px}button,input,select{font:inherit;background:#20333f;color:#edf4f5;border:1px solid #46636f;border-radius:6px;padding:7px}button{cursor:pointer}button:hover{background:#31515b}button:disabled,input:disabled,select:disabled{opacity:.45;cursor:default}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}#build{width:100%;background:#226163}small{display:block;color:#9cb2bc;margin-top:10px}canvas{width:100%;max-height:76vh;object-fit:contain;display:block;touch-action:none;border:1px solid #30424e;border-radius:10px;background:#0f171f;cursor:grab}canvas:active{cursor:grabbing}.status{padding:12px 0;color:#b9d8cb}#mesh-stats{font-variant-numeric:tabular-nums;color:#b8ced8;white-space:pre-line}#layers{color:#a9bdc9;margin-top:10px}.badge{display:inline-block;padding:4px 9px;border-radius:20px;background:#243d47;font-size:13px;margin-bottom:10px}#error{color:#ffb6a8}@media(max-width:850px){main{grid-template-columns:1fr;padding:14px}header{padding:16px}aside{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr))}canvas{max-height:none}}
+</style><script src="../dist/erode-mesh.js" defer></script></head>
+<body><header><h1>Erode → final mesh</h1><p>Run erosion, pause on a result, then build a lighter adaptive triangle surface.</p><a href="index.html">Preset examples</a> · <a href="../index.html">Full erosion controls</a></header>
+<main><aside>
+<fieldset><legend>1 · Shape the terrain</legend>
+<label>Landscape <select id="scene"><option value="lowland_river">Lowland river</option><option value="river_delta">River delta</option><option value="mountain_canyon">Mountain canyon</option><option value="volcano">Volcano gullies</option><option value="crater_lake">Crater lake</option></select></label>
+<label>Resolution <select id="size"><option value="256">256 × 256</option><option value="512" selected>512 × 512</option><option value="1024">1024 × 1024</option></select></label>
+<div class="actions"><button id="run">Run</button><button id="reset">Reset</button><button id="advance">View evolved terrain</button></div>
+<small>Run continues until paused. View evolved terrain advances to the scene’s example time.</small>
+</fieldset>
+<fieldset><legend>2 · Build the final mesh</legend>
+<label>Detail priority <select id="mode"><option value="hybrid">Hybrid</option><option value="traditional">Relief</option><option value="hydrographic">Channels</option><option value="hydrological">Catchments</option></select></label>
+<label>Minimum spacing <input id="min-spacing" type="number" min="1" max="128" value="3"></label>
+<label>Maximum spacing <input id="max-spacing" type="number" min="1" max="256" value="28"></label>
+<label>Follow river valleys <input id="guides" type="checkbox" checked></label>
+<button id="build">Build final mesh</button>
+<small>Pauses erosion. One snapshot feeds the Delaunay worker; rebuilding settings reuses that snapshot. Finer spacing keeps more channel detail.</small>
+</fieldset>
+<fieldset><legend>3 · Compare the result</legend>
+<label>Surface <select id="surface" disabled><option value="adaptive">Adaptive triangles</option><option value="grid">Full grid</option></select></label>
+<label>Color <select id="color"><option value="8">Slope relief</option><option value="7">Natural layers</option><option value="9">River flow</option><option value="6">Erosion / deposition</option></select></label>
+<label>Triangle wireframe <input id="wire" type="checkbox" checked disabled></label>
+<label>Wireframe opacity <input id="wire-opacity" type="range" min="0" max="1" step="0.05" value="0.55" disabled style="width:120px"></label>
+<div id="mesh-stats">Build a mesh to compare triangle counts.</div>
+<small>Drag to orbit · scroll to zoom. Resuming erosion returns to the grid; build again when you want a new final mesh.</small>
+</fieldset>
+</aside><section><span id="view-label" class="badge">Live erosion · grid surface</span><canvas id="terrain" width="1000" height="750" aria-label="Erosion terrain and adaptive triangle mesh"></canvas><div id="status" class="status" role="status">Preparing terrain…</div><div id="error" role="alert"></div><div id="layers"></div></section></main></body></html>

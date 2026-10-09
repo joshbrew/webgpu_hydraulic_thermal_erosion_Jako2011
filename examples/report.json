@@ -1,0 +1,268 @@
+[
+  {
+    "terrain": "alpine",
+    "preset": "paper_balanced",
+    "id": "alpine-paper_balanced",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 785.1160662323236,
+    "deposited": 471.3538144826889,
+    "maxChange": 0.12487167119979858,
+    "solidChangeFraction": -0.004062015109386084,
+    "water": 1455.224609375,
+    "sediment": 157.7838134765625,
+    "range": {
+      "min": 0.24761982262134552,
+      "max": 0.8777679204940796
+    },
+    "closed": false
+  },
+  {
+    "terrain": "alpine",
+    "preset": "river_cut",
+    "id": "alpine-river_cut",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 513.4001205265522,
+    "deposited": 425.7436458468437,
+    "maxChange": 0.10857576131820679,
+    "solidChangeFraction": -0.0008098443957631604,
+    "water": 442.04083251953125,
+    "sediment": 56.55501174926758,
+    "range": {
+      "min": 0.2727183997631073,
+      "max": 0.8784242868423462
+    },
+    "closed": false
+  },
+  {
+    "terrain": "fan",
+    "preset": "delta_depositor",
+    "id": "fan-delta_depositor",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 391.64404057255615,
+    "deposited": 242.1268862336874,
+    "maxChange": 0.1217288076877594,
+    "solidChangeFraction": -0.005457800169123845,
+    "water": 1109.25146484375,
+    "sediment": 43.23080825805664,
+    "range": {
+      "min": 0.000007518027814512607,
+      "max": 0.7869155406951904
+    },
+    "closed": false
+  },
+  {
+    "terrain": "badlands",
+    "preset": "flash_flood",
+    "id": "badlands-flash_flood",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 1888.995189487934,
+    "deposited": 795.05584821105,
+    "maxChange": 0.1622411012649536,
+    "solidChangeFraction": -0.030641616385842445,
+    "water": 0.12162099033594131,
+    "sediment": 0.0007506817346438766,
+    "range": {
+      "min": 0.3024054169654846,
+      "max": 0.7143427133560181
+    },
+    "closed": false
+  },
+  {
+    "terrain": "badlands",
+    "preset": "badlands",
+    "id": "badlands-badlands",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 1915.1513422727585,
+    "deposited": 744.4653822481632,
+    "maxChange": 0.18928655982017517,
+    "solidChangeFraction": -0.025399818447239736,
+    "water": 1283.5943603515625,
+    "sediment": 263.885009765625,
+    "range": {
+      "min": 0.28545406460762024,
+      "max": 0.7104631662368774
+    },
+    "closed": false
+  },
+  {
+    "terrain": "canyon",
+    "preset": "canyon_carver",
+    "id": "canyon-canyon_carver",
+    "seconds": 90,
+    "size": 256,
+    "seed": 7,
+    "eroded": 1035.6617309898138,
+    "deposited": 463.96980836987495,
+    "maxChange": 0.13881149888038635,
+    "solidChangeFraction": -0.008096177521986067,
+    "water": 920.4190063476562,
+    "sediment": 199.28253173828125,
+    "range": {
+      "min": 0.1893576681613922,
+      "max": 0.870845377445221
+    },
+    "closed": false
+  },
+  {
+    "terrain": "talus",
+    "preset": "thermal_heavy",
+    "id": "talus-thermal_heavy",
+    "seconds": 20,
+    "size": 256,
+    "seed": 7,
+    "eroded": 716.153006196022,
+    "deposited": 716.1530009657145,
+    "maxChange": 0.557079553604126,
+    "solidChangeFraction": 0,
+    "water": 0,
+    "sediment": 0,
+    "range": {
+      "min": 0.6219079494476318,
+      "max": 0.8076355457305908
+    },
+    "closed": false
+  },
+  {
+    "terrain": "basin",
+    "preset": "flash_flood",
+    "id": "basin-flash_flood",
+    "seconds": 60,
+    "size": 256,
+    "seed": 7,
+    "eroded": 2318.324480265379,
+    "deposited": 2318.3024294376373,
+    "maxChange": 0.2071411833167076,
+    "solidChangeFraction": -1.0245224102144265e-7,
+    "water": 0.25996866822242737,
+    "sediment": 0.015752773731946945,
+    "range": {
+      "min": 0.12070061266422272,
+      "max": 0.7720404267311096
+    },
+    "closed": true
+  },
+  {
+    "terrain": "alpine",
+    "preset": "gentle_weathering",
+    "id": "alpine-gentle_weathering",
+    "seconds": 90,
+    "size": 256,
+    "seed": 7,
+    "eroded": 288.34950706362724,
+    "deposited": 228.192617893219,
+    "maxChange": 0.08864486217498779,
+    "solidChangeFraction": -0.0005176626730919299,
+    "water": 770.21044921875,
+    "sediment": 40.278446197509766,
+    "range": {
+      "min": 0.2758404314517975,
+      "max": 0.8803405165672302
+    },
+    "closed": false
+  },
+  {
+    "terrain": "river_delta",
+    "preset": "river_delta",
+    "id": "river_delta-river_delta",
+    "seconds": 360,
+    "size": 256,
+    "seed": 7,
+    "eroded": 219.2249435260892,
+    "deposited": 320.49184247106314,
+    "maxChange": 0.21715030074119568,
+    "solidChangeFraction": 0.009248927644145708,
+    "water": 1068.5255126953125,
+    "sediment": 47.23607635498047,
+    "range": {
+      "min": 0.08528799563646317,
+      "max": 0.5631381869316101
+    },
+    "closed": false
+  },
+  {
+    "terrain": "mountain_canyon",
+    "preset": "mountain_canyon",
+    "id": "mountain_canyon-mountain_canyon",
+    "seconds": 90,
+    "size": 256,
+    "seed": 7,
+    "eroded": 355.0842342879623,
+    "deposited": 236.93759208917618,
+    "maxChange": 0.10062238574028015,
+    "solidChangeFraction": -0.0013458288788854096,
+    "water": 503.2334899902344,
+    "sediment": 51.02305603027344,
+    "range": {
+      "min": 0.030066804960370064,
+      "max": 0.9800000190734863
+    },
+    "closed": false
+  },
+  {
+    "terrain": "volcano",
+    "preset": "volcanic_cone",
+    "id": "volcano-volcanic_cone",
+    "seconds": 120,
+    "size": 512,
+    "seed": 7,
+    "eroded": 6385.621569052339,
+    "deposited": 6383.360983218998,
+    "maxChange": 0.21682289242744446,
+    "solidChangeFraction": 2.507045892241104e-7,
+    "water": 33.1429328918457,
+    "sediment": 2.2688543796539307,
+    "range": {
+      "min": 0.06499999761581421,
+      "max": 0.7904049158096313
+    },
+    "closed": true
+  },
+  {
+    "terrain": "crater_lake",
+    "preset": "volcanic_lake",
+    "id": "crater_lake-volcanic_lake",
+    "seconds": 90,
+    "size": 256,
+    "seed": 7,
+    "eroded": 1349.6771588772535,
+    "deposited": 1311.8196964412928,
+    "maxChange": 0.19749897718429565,
+    "solidChangeFraction": 9.70652811608318e-8,
+    "water": 498.2717590332031,
+    "sediment": 37.8592414855957,
+    "range": {
+      "min": 0.06499999761581421,
+      "max": 0.789699137210846
+    },
+    "closed": true
+  },
+  {
+    "terrain": "lowland_river",
+    "preset": "lowland_meanders",
+    "id": "lowland_river-lowland_meanders",
+    "seconds": 360,
+    "size": 256,
+    "seed": 7,
+    "eroded": 29.599371142685413,
+    "deposited": 39.329243026673794,
+    "maxChange": 0.030386365950107574,
+    "solidChangeFraction": 0.0015024797088747516,
+    "water": 39.984737396240234,
+    "sediment": 1.0295004844665527,
+    "range": {
+      "min": 0.07722315192222595,
+      "max": 0.13304246962070465
+    },
+    "closed": false
+  }
+]

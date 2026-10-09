@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-08",
+  "adapterVendor": "nvidia",
+  "comparison": "Lowland river immediately before and after parallel row reduction and cached bends",
+  "method": "120 warmup steps; median of five 100-step timestamp batches; alternate version order each round",
+  "samples": [
+    { "size": 256, "beforeGpuMsPerStep": 0.17926144, "afterGpuMsPerStep": 0.07899136 },
+    { "size": 512, "beforeGpuMsPerStep": 0.42213984, "afterGpuMsPerStep": 0.32954368 },
+    { "size": 1024, "beforeGpuMsPerStep": 2.92084736, "afterGpuMsPerStep": 2.43039232 }
+  ]
+}

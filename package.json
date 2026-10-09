@@ -1,0 +1,21 @@
+{
+  "name": "webgpu-hydraulic-thermal-erosion",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/sync-shaders.mjs && node tools/build.mjs",
+    "test": "node tests/run.mjs",
+    "test:meanders": "node tests/meanders.mjs",
+    "test:mesh": "node tests/erode-mesh.mjs",
+    "test:mesh-water": "node tests/mesh-water.mjs",
+    "test:mesh-pages": "node tests/mesh-pages.mjs",
+    "test:studio-ui": "node tests/studio-ui.mjs",
+    "benchmark:river": "node tests/river-performance.mjs",
+    "benchmark:mesh-water": "node tests/mesh-water-performance.mjs",
+    "start": "tinybuild"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1",
+    "tinybuild": "^1.0.6"
+  }
+}

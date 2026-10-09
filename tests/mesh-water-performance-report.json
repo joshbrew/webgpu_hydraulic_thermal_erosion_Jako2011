@@ -1,0 +1,84 @@
+{
+  "adapter": "nvidia",
+  "resolution": [
+    512,
+    512
+  ],
+  "method": "Same fixed-bed SWE implementation: one shared edge flux, GPU CFL and four dispatches per step. 200 warmup steps; median of five 100-step batches. Compute only; meshes have different spatial fidelity and may select different timesteps.",
+  "adaptive": {
+    "triangles": 6566,
+    "gpuMsPerStep": 0.01700864,
+    "completionMsPerStep": 0.05599999904632568,
+    "batches": [
+      {
+        "steps": 100,
+        "completionMs": 4.899999976158142,
+        "gpuMs": 1.123328,
+        "gpuMsPerStep": 0.011233280000000002
+      },
+      {
+        "steps": 100,
+        "completionMs": 8,
+        "gpuMs": 2.39104,
+        "gpuMsPerStep": 0.0239104
+      },
+      {
+        "steps": 100,
+        "completionMs": 5.800000071525574,
+        "gpuMs": 1.123328,
+        "gpuMsPerStep": 0.011233280000000002
+      },
+      {
+        "steps": 100,
+        "completionMs": 5.599999904632568,
+        "gpuMs": 1.700864,
+        "gpuMsPerStep": 0.01700864
+      },
+      {
+        "steps": 100,
+        "completionMs": 4.399999976158142,
+        "gpuMs": 2.38592,
+        "gpuMsPerStep": 0.0238592
+      }
+    ],
+    "dt": 0.019999999552965164
+  },
+  "fullGrid": {
+    "triangles": 522242,
+    "gpuMsPerStep": 1.06113024,
+    "completionMsPerStep": 1.0979999995231629,
+    "batches": [
+      {
+        "steps": 100,
+        "completionMs": 113.89999997615814,
+        "gpuMs": 109.10208,
+        "gpuMsPerStep": 1.0910208
+      },
+      {
+        "steps": 100,
+        "completionMs": 111.89999997615814,
+        "gpuMs": 106.359808,
+        "gpuMsPerStep": 1.06359808
+      },
+      {
+        "steps": 100,
+        "completionMs": 109.79999995231628,
+        "gpuMs": 106.113024,
+        "gpuMsPerStep": 1.06113024
+      },
+      {
+        "steps": 100,
+        "completionMs": 107.70000004768372,
+        "gpuMs": 104.830976,
+        "gpuMsPerStep": 1.04830976
+      },
+      {
+        "steps": 100,
+        "completionMs": 103,
+        "gpuMs": 99.661824,
+        "gpuMsPerStep": 0.99661824
+      }
+    ],
+    "dt": 0.019999999552965164
+  }
+}

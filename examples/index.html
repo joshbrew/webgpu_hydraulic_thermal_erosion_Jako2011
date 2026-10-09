@@ -1,0 +1,92 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Erosion preset examples</title>
+<style>
+.demo-nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:28px}.demo-nav a,.open-studio{color:#92d4d2;border:1px solid #344f5b;border-radius:8px;padding:9px 13px;text-decoration:none;font-size:13px}.demo-nav a:hover,.demo-nav [aria-current]{background:#20383f}.open-studio{margin-left:10px;display:inline-block}
+body{background:#10151c;color:#e9edf3;font:16px/1.6 system-ui;max-width:1400px;margin:auto;padding:32px}h1,h2{line-height:1.2}article{margin:48px 0}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}figure{margin:0}img{width:100%;display:block;border-radius:10px}figcaption,p{color:#abb9ca}button,select{font:inherit;color:#e9edf3;background:#263b4a;border:1px solid #55728a;border-radius:7px;padding:8px 14px;cursor:pointer}button:hover{background:#365267}button:disabled,select:disabled{opacity:.5;cursor:wait}.run-sim{margin:0 0 16px}.live-panel{margin-top:20px;padding:16px;border:1px solid #55728a;border-radius:12px;background:#141e28}.live-panel[hidden]{display:none}.live-panel canvas{display:block;width:100%;max-width:1000px;aspect-ratio:4/3;height:auto;margin:auto;border-radius:8px;cursor:grab}.live-panel canvas:active{cursor:grabbing}.live-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:14px}.live-status{color:#b4d7c7;margin-left:auto}.layer-legend{display:flex;flex-wrap:wrap;gap:12px}.layer-legend span{font-size:14px;border-left:12px solid;padding-left:8px;color:#c3cdd8}@media(max-width:700px){body{padding:16px}.pair{grid-template-columns:1fr}.live-status{width:100%;margin:0}.live-panel{padding:10px}}
+</style><script src="../dist/examples.js" defer></script></head><body>
+<nav class="demo-nav" aria-label="Demo navigation"><a href="../index.html">Erosion studio</a><a href="index.html" aria-current="page">Visual examples</a><a href="erode-mesh.html">Final mesh demo</a><a href="../../hydraulic_triangular_irregular_networks/index.html">Triangle mesh studio</a></nav>
+<h1>Erosion preset examples</h1><p>Seeded terrain with distinct material layers, shown in slope relief. Run sim continues until paused. Drag to orbit, scroll to zoom, adjust river sediment load, or use View result to reach the pictured time. Only the active preview runs.</p>
+<p><a href="erode-mesh.html" style="color:#92d4d2">Erode → final adaptive mesh</a> · Pause an evolved landscape and compare its Delaunay surface with the full grid.</p>
+<article data-terrain="alpine" data-preset="paper_balanced" data-seconds="60" data-size="256" data-seed="7">
+<h2>Balanced drainage · Alpine catchment</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=alpine&amp;preset=paper_balanced&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="alpine-paper_balanced-before.png" alt="Balanced drainage before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="alpine-paper_balanced-after.png" alt="Balanced drainage after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="alpine" data-preset="river_cut" data-seconds="60" data-size="256" data-seed="7">
+<h2>Spring-fed channels · Alpine catchment</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=alpine&amp;preset=river_cut&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="alpine-river_cut-before.png" alt="Spring-fed channels before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="alpine-river_cut-after.png" alt="Spring-fed channels after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="fan" data-preset="delta_depositor" data-seconds="60" data-size="256" data-seed="7">
+<h2>Alluvial fan · Mountain outlet and fan</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=fan&amp;preset=delta_depositor&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="fan-delta_depositor-before.png" alt="Alluvial fan before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="fan-delta_depositor-after.png" alt="Alluvial fan after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="badlands" data-preset="flash_flood" data-seconds="60" data-size="256" data-seed="7">
+<h2>Flash flood and dry-down · Warped badlands</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=badlands&amp;preset=flash_flood&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="badlands-flash_flood-before.png" alt="Flash flood and dry-down before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="badlands-flash_flood-after.png" alt="Flash flood and dry-down after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="badlands" data-preset="badlands" data-seconds="60" data-size="256" data-seed="7">
+<h2>Soft badlands · Warped badlands</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=badlands&amp;preset=badlands&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="badlands-badlands-before.png" alt="Soft badlands before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="badlands-badlands-after.png" alt="Soft badlands after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="canyon" data-preset="canyon_carver" data-seconds="90" data-size="256" data-seed="7">
+<h2>Layered canyon · Layered canyon</h2><p>Seed 7 · 256 × 256 · 90 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=canyon&amp;preset=canyon_carver&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="canyon-canyon_carver-before.png" alt="Layered canyon before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="canyon-canyon_carver-after.png" alt="Layered canyon after erosion" loading="lazy"><figcaption>After 90 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="talus" data-preset="thermal_heavy" data-seconds="20" data-size="256" data-seed="7">
+<h2>Dry talus relaxation · Cliffs and talus</h2><p>Seed 7 · 256 × 256 · 20 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=talus&amp;preset=thermal_heavy&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="talus-thermal_heavy-before.png" alt="Dry talus relaxation before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="talus-thermal_heavy-after.png" alt="Dry talus relaxation after erosion" loading="lazy"><figcaption>After 20 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="basin" data-preset="flash_flood" data-seconds="60" data-size="256" data-seed="7">
+<h2>Flash flood and dry-down · Closed basin</h2><p>Seed 7 · 256 × 256 · 60 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=basin&amp;preset=flash_flood&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="basin-flash_flood-before.png" alt="Flash flood and dry-down before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="basin-flash_flood-after.png" alt="Flash flood and dry-down after erosion" loading="lazy"><figcaption>After 60 seconds</figcaption></figure></div>
+<p>Closed basin solid drift: -0.00001%</p></article>
+<article data-terrain="alpine" data-preset="gentle_weathering" data-seconds="90" data-size="256" data-seed="7">
+<h2>Gentle weathering · Alpine catchment</h2><p>Seed 7 · 256 × 256 · 90 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=alpine&amp;preset=gentle_weathering&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="alpine-gentle_weathering-before.png" alt="Gentle weathering before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="alpine-gentle_weathering-after.png" alt="Gentle weathering after erosion" loading="lazy"><figcaption>After 90 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="river_delta" data-preset="river_delta" data-seconds="360" data-size="256" data-seed="7">
+<h2>River delta · River delta</h2><p>Seed 7 · 256 × 256 · 360 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=river_delta&amp;preset=river_delta&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="river_delta-river_delta-before.png" alt="River delta before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="river_delta-river_delta-after.png" alt="River delta after erosion" loading="lazy"><figcaption>After 360 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="mountain_canyon" data-preset="mountain_canyon" data-seconds="90" data-size="256" data-seed="7">
+<h2>Mountain river canyon · Mountain river canyon</h2><p>Seed 7 · 256 × 256 · 90 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=mountain_canyon&amp;preset=mountain_canyon&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="mountain_canyon-mountain_canyon-before.png" alt="Mountain river canyon before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="mountain_canyon-mountain_canyon-after.png" alt="Mountain river canyon after erosion" loading="lazy"><figcaption>After 90 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article>
+<article data-terrain="volcano" data-preset="volcanic_cone" data-seconds="120" data-size="512" data-seed="7">
+<h2>Volcanic radial canyons · Longonot-inspired volcano</h2><p>Seed 7 · 512 × 512 · 120 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=volcano&amp;preset=volcanic_cone&amp;size=512">Open in studio ↗</a>
+<div class="pair"><figure><img src="volcano-volcanic_cone-before.png" alt="Volcanic radial canyons before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="volcano-volcanic_cone-after.png" alt="Volcanic radial canyons after erosion" loading="lazy"><figcaption>After 120 seconds</figcaption></figure></div>
+<p>Closed basin solid drift: 0.00003%</p></article>
+<article data-terrain="crater_lake" data-preset="volcanic_lake" data-seconds="90" data-size="256" data-seed="7">
+<h2>Crater lake and flank erosion · Volcanic crater lake</h2><p>Seed 7 · 256 × 256 · 90 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=crater_lake&amp;preset=volcanic_lake&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="crater_lake-volcanic_lake-before.png" alt="Crater lake and flank erosion before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="crater_lake-volcanic_lake-after.png" alt="Crater lake and flank erosion after erosion" loading="lazy"><figcaption>After 90 seconds</figcaption></figure></div>
+<p>Closed basin solid drift: 0.00001%</p></article>
+<article data-terrain="lowland_river" data-preset="lowland_meanders" data-seconds="360" data-size="256" data-seed="7">
+<h2>Lowland meandering river · Lowland river and floodplain</h2><p>Seed 7 · 256 × 256 · 360 simulated seconds</p>
+<button type="button" class="run-sim">Run sim</button>
+<a class="open-studio" href="../index.html?map=lowland_river&amp;preset=lowland_meanders&amp;size=256">Open in studio ↗</a>
+<div class="pair"><figure><img src="lowland_river-lowland_meanders-before.png" alt="Lowland meandering river before erosion" loading="lazy"><figcaption>Starting terrain</figcaption></figure><figure><img src="lowland_river-lowland_meanders-after.png" alt="Lowland meandering river after erosion" loading="lazy"><figcaption>After 360 seconds</figcaption></figure></div>
+<p>Open boundaries allow sediment export.</p></article></body></html>

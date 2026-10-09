@@ -1,0 +1,66 @@
+[
+  {
+    "vertices": 825,
+    "triangles": 1576,
+    "gridTriangles": 130050,
+    "buildMs": 321.1999999284744,
+    "scene": "lowland_river",
+    "stateUnchanged": true,
+    "iterationUnchanged": true,
+    "snapshots": 1,
+    "errors": []
+  },
+  {
+    "vertices": 657,
+    "triangles": 1240,
+    "gridTriangles": 130050,
+    "buildMs": 145.20000004768372,
+    "scene": "river_delta",
+    "stateUnchanged": true,
+    "iterationUnchanged": true,
+    "snapshots": 3,
+    "errors": []
+  },
+  {
+    "vertices": 1011,
+    "triangles": 1948,
+    "gridTriangles": 130050,
+    "buildMs": 181.80000007152557,
+    "scene": "volcano",
+    "stateUnchanged": true,
+    "iterationUnchanged": true,
+    "snapshots": 5,
+    "errors": []
+  },
+  {
+    "vertices": 956,
+    "triangles": 1838,
+    "gridTriangles": 130050,
+    "buildMs": 135.80000007152557,
+    "scene": "mountain_canyon",
+    "stateUnchanged": true,
+    "iterationUnchanged": true,
+    "snapshots": 7,
+    "errors": []
+  },
+  {
+    "vertices": 1121,
+    "triangles": 2168,
+    "gridTriangles": 130050,
+    "buildMs": 137.19999992847443,
+    "scene": "crater_lake",
+    "stateUnchanged": true,
+    "iterationUnchanged": true,
+    "snapshots": 9,
+    "errors": []
+  },
+  {
+    "scene": "evolved lowland / file",
+    "vertices": 2831,
+    "triangles": 5516,
+    "gridTriangles": 522242,
+    "buildMs": 732.5,
+    "time": 179.99999597668648,
+    "errors": []
+  }
+]

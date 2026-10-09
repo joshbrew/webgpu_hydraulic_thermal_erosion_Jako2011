@@ -1,29 +1,33 @@
 import ewrkr from './erosion.worker.js';
+import { EROSION_PRESETS } from './erosionPresets.js';
+import { EXAMPLE_MATERIALS, terrainExampleOptions, TERRAIN_EXAMPLES } from './terrainExamples.js';
+import createMeshControls from './MeshControls.js';
+import mountStudio from './StudioLayout.js';
 
 const DEFAULT_MIN_HEIGHT = 0;
 const DEFAULT_MAX_HEIGHT = 1;
-const DEFAULT_ITERATIONS_PER_FRAME = 5;
-const DEFAULT_STEP_ITERATIONS = 128;
+const DEFAULT_ITERATIONS_PER_FRAME = 4;
+const DEFAULT_STEP_ITERATIONS = 160;
 const DEFAULT_TIME_STEP = 0.02;
 const DEFAULT_RAIN_RATE = 0.001;
-const DEFAULT_EVAPORATION_RATE = 0.015;
-const DEFAULT_PIPE_AREA = 20.0;
+const DEFAULT_EVAPORATION_RATE = 0.025;
+const DEFAULT_PIPE_AREA = 16.0;
 const DEFAULT_GRAVITY = 9.81;
-const DEFAULT_CAPACITY_SCALE = 0.82;
-const DEFAULT_SUSPENSION_RATE = 0.32;
-const DEFAULT_DEPOSITION_RATE = 1.28;
-const DEFAULT_SOFTENING_RATE = 2.8;
-const DEFAULT_MAX_EROSION_DEPTH = 0.09;
-const DEFAULT_THERMAL_RATE = 0.24;
-const DEFAULT_TALUS_COEFF = 0.92;
-const DEFAULT_TALUS_BIAS = 0.12;
-const DEFAULT_RENDER_HEIGHT_SCALE = 0.045;
-const DEFAULT_WATER_HEIGHT_SCALE = 0.06;
+const DEFAULT_CAPACITY_SCALE = 1.2;
+const DEFAULT_SUSPENSION_RATE = 0.35;
+const DEFAULT_DEPOSITION_RATE = 1.4;
+const DEFAULT_SOFTENING_RATE = 1.2;
+const DEFAULT_MAX_EROSION_DEPTH = 0.04;
+const DEFAULT_THERMAL_RATE = 0.25;
+const DEFAULT_TALUS_COEFF = 0.012;
+const DEFAULT_TALUS_BIAS = 0.002;
+const DEFAULT_RENDER_HEIGHT_SCALE = 0.45;
+const DEFAULT_WATER_HEIGHT_SCALE = 0.45;
 const DEFAULT_EDGE_WATER_FLOOR = 0.0;
 const DEFAULT_WATER_OPACITY = 0.92;
 const DEFAULT_SEDIMENT_TINT = 0.35;
-const DEFAULT_HARDNESS_BASE = 0.16;
-const DEFAULT_HARDNESS_VARIATION = 0.03;
+const DEFAULT_HARDNESS_BASE = 0.24;
+const DEFAULT_HARDNESS_VARIATION = 0.12;
 const DEFAULT_SOURCE_X = 35;
 const DEFAULT_SOURCE_Y = 18;
 const DEFAULT_SOURCE_RADIUS = 4;
@@ -43,7 +47,6 @@ const DEFAULT_CAMERA_POS_Z = 1.5238999619464006;
 const DEFAULT_CAMERA_MOVE_SPEED = 1.35;
 const DEFAULT_CAMERA_LOOK_SENSITIVITY = 0.14;
 const DEFAULT_TESSELLATION = 1;
-const DEFAULT_HYDRAULIC_8_WAY = true;
 const DEFAULT_PRECIP_ENABLED = true;
 const DEFAULT_THERMAL_ENABLED = true;
 const DEFAULT_HYDRAULIC_EROSION_ENABLED = true;
@@ -190,13 +193,15 @@ function readNumber(label, fallback) {
 }
 
 function makeSectionCard(title) {
-  const section = document.createElement('section');
+  const section = document.createElement('details');
+  section.className='setting-panel';
+  section.open=['View and shading','Process toggles','Shared water flow and simulation'].includes(title);
   section.style.border = '1px solid #2d2d2d';
   section.style.borderRadius = '10px';
   section.style.padding = '10px';
   section.style.background = '#141414';
 
-  const heading = document.createElement('div');
+  const heading = document.createElement('summary');
   heading.textContent = title;
   heading.style.fontSize = '13px';
   heading.style.fontWeight = '600';
@@ -353,6 +358,7 @@ function transformVec4(m, v) {
 }
 
 const state = {
+  generatedExample: null,
   sourceImageInfo: null,
   sourceFile: null,
   sourceFileName: '',
@@ -411,6 +417,7 @@ function attachWorkerListeners(worker) {
     }
 
     if (message.type === 'status') {
+      if(message.mesh) { state.mesh=message.mesh; meshControls.update({ ...message.mesh,ready:!!message.stats?.ready,running:message.running&&!message.mesh.waterRunning }); }
       if (message.stats) state.gpuStats = message.stats;
       if (Array.isArray(message.sourcePoints)) state.sourcePoints = message.sourcePoints;
       if (message.sourceImageInfo) state.sourceImageInfo = message.sourceImageInfo;
@@ -418,6 +425,7 @@ function attachWorkerListeners(worker) {
       if (typeof message.running === 'boolean') state.running = message.running;
       if (typeof message.gpuReady === 'boolean') state.workerWarming = !message.gpuReady;
       if (typeof message.simReady === 'boolean') state.simReady = message.simReady;
+      updatePresetAvailability();
       updateStatus();
       updateStats();
       return;
@@ -427,11 +435,14 @@ function attachWorkerListeners(worker) {
       debugLog('workerError', message.message);
       updateStatus(message.message || 'Worker error');
     }
+    if(message.type==='meshProgress')meshControls.update({message:message.message,busy:true});
   });
 
   worker.addEventListener('error', (event) => {
     console.error('[WebGPU Erosion UI] worker error', event);
     updateStatus(event.message || 'Worker crashed');
+    for(const pending of pendingWorkerRequests.values())pending.reject(new Error(event.message||'Worker crashed'));
+    pendingWorkerRequests.clear();
   });
 }
 
@@ -441,7 +452,7 @@ async function ensureWorker() {
     throw new Error('OffscreenCanvas worker rendering is not available in this browser.');
   }
 
-  const worker = new Worker(ewrkr, { type: 'module' });
+  const worker = new Worker(ewrkr, { type: String(ewrkr).startsWith('blob:') ? 'classic' : 'module' });
   attachWorkerListeners(worker);
   state.worker = worker;
 
@@ -496,8 +507,16 @@ function collectSimulationParams() {
     evaporationRate: readNumber(evaporationRateLabel, DEFAULT_EVAPORATION_RATE),
     pipeArea: readNumber(pipeAreaLabel, DEFAULT_PIPE_AREA),
     gravity: readNumber(gravityLabel, DEFAULT_GRAVITY),
+    flowDrag: readNumber(flowDragLabel, 2),
+    maxOutflowFraction: readNumber(outflowFractionLabel, 0.5),
     capacityScale: readNumber(capacityScaleLabel, DEFAULT_CAPACITY_SCALE),
     suspensionRate: readNumber(suspensionRateLabel, DEFAULT_SUSPENSION_RATE),
+    bankErosionRate: readNumber(bankErosionRateLabel, 0),
+    bankBendBias: readNumber(bankBendBiasLabel, 24),
+    bendSedimentRate: readNumber(bendSedimentLabel, 0),
+    straightBankErosionFactor: EROSION_PRESETS[presetLabel.input.value]?.straightBankErosionFactor ?? 0.08,
+    riverBendLength: EROSION_PRESETS[presetLabel.input.value]?.riverBendLength ?? 0,
+    openBoundaryEdges: EROSION_PRESETS[presetLabel.input.value]?.openBoundaryEdges ?? 15,
     depositionRate: readNumber(depositionRateLabel, DEFAULT_DEPOSITION_RATE),
     softeningRate: readNumber(softeningRateLabel, DEFAULT_SOFTENING_RATE),
     maxErosionDepth: readNumber(maxErosionDepthLabel, DEFAULT_MAX_EROSION_DEPTH),
@@ -509,6 +528,7 @@ function collectSimulationParams() {
     waterHeightScale: readNumber(waterHeightScaleLabel, DEFAULT_WATER_HEIGHT_SCALE),
     edgeWaterFloor: Math.max(0, readNumber(edgeWaterFloorLabel, DEFAULT_EDGE_WATER_FLOOR)),
     waterOpacity: readNumber(waterOpacityLabel, DEFAULT_WATER_OPACITY),
+    renderGridStep: Number(renderDetailLabel.input.value),
     sedimentTint: readNumber(sedimentTintLabel, DEFAULT_SEDIMENT_TINT),
     hardnessBase: normalizedPrimaryErodMin,
     hardnessVariation: Math.max(0, normalizedPrimaryErodMax - normalizedPrimaryErodMin),
@@ -516,13 +536,14 @@ function collectSimulationParams() {
     sourceCenterY: readNumber(sourceYLabel, DEFAULT_SOURCE_Y) / 100,
     sourceRadius: readNumber(sourceRadiusLabel, DEFAULT_SOURCE_RADIUS),
     sourceStrength: readNumber(sourceStrengthLabel, DEFAULT_SOURCE_STRENGTH),
+    sourceSedimentConcentration: Math.max(0, readNumber(sourceSedimentLabel, 0)),
     rainDuration: readNumber(rainDurationLabel, DEFAULT_RAIN_DURATION),
     pulse2Duration: readNumber(pulse2DurationLabel, DEFAULT_PULSE2_DURATION),
     sourceLayoutMode: Number(sourceLayoutLabel.input.value) || 0,
     randomSpringCount: Math.max(1, Math.floor(readNumber(randomSpringCountLabel, DEFAULT_RANDOM_SPRING_COUNT))),
     sourceSeed: Math.floor(readNumber(springSeedLabel, DEFAULT_SPRING_SEED)),
     metersPerPixel: Math.max(1, readNumber(metersPerPixelLabel, DEFAULT_METERS_PER_PIXEL)),
-    hydraulic8Way: !!hydraulic8WayLabel.input.checked,
+    closedBoundaries: closedBoundaryLabel.input.checked,
     sourceEnabled: !!sourceEnabledLabel.input.checked,
     renderMode: Number(renderModeLabel.input.value) || 0,
     cameraAzimuthDeg: readNumber(cameraAzimuthLabel, DEFAULT_CAMERA_AZIMUTH),
@@ -544,7 +565,7 @@ function collectLayerMaterialConfig() {
     layers: layerMaterialControls.map((layer, index) => ({
       enabled: !!layer.enableLabel.input.checked,
       preset: layer.materialPresetLabel.input.value,
-      label: `Layer ${index + 1}`,
+      label: EXAMPLE_MATERIALS[state.generatedExample?.name]?.[index]?.label || `Layer ${index + 1}`,
       heightMin: readNumber(layer.heightMinLabel, DEFAULT_LAYER_MATERIALS[index].heightMin),
       heightMax: readNumber(layer.heightMaxLabel, DEFAULT_LAYER_MATERIALS[index].heightMax),
       hardnessMin: clampValue(readNumber(layer.hardnessMinLabel, LAYER_MATERIAL_PRESETS.custom.hardnessMin), 0.0, 1.0),
@@ -555,10 +576,12 @@ function collectLayerMaterialConfig() {
 }
 
 function hasAnyDemSourceSelected() {
+  if (state.generatedExample) return true;
   return getDemSourceMode() === 'stack4' ? state.layerSourceFiles.some(Boolean) : !!state.sourceFile;
 }
 
 function getSourceSummaryName() {
+  if (state.generatedExample) return TERRAIN_EXAMPLES[state.generatedExample.name].label + ' (seed ' + state.generatedExample.seed + ')';
   if (getDemSourceMode() === 'stack4') {
     return state.layerSourceFiles
       .map((file, index) => file ? `L${index + 1}:${file.name}` : null)
@@ -607,7 +630,8 @@ function updateLayerDemUiState() {
       layer.enableLabel.input.checked = true;
       layer.heading.textContent = 'Layer 1 / base material';
     } else {
-      layer.heading.textContent = `Layer ${layerIndex + 1}`;
+      const material = EXAMPLE_MATERIALS[state.generatedExample?.name]?.[layerIndex];
+      layer.heading.textContent = `Layer ${layerIndex + 1}${material ? ' — ' + material.label : ''}`;
     }
   }
   syncSingleModeMaterialFields();
@@ -657,21 +681,28 @@ const demSourceModeLabel = makeSelectLabel('DEM source', [
 
 const minHeightLabel = makeNumberLabel('Height floor', DEFAULT_MIN_HEIGHT, '88px');
 const maxHeightLabel = makeNumberLabel('Height ceiling', DEFAULT_MAX_HEIGHT, '88px');
-const iterationsPerFrameLabel = makeNumberLabel('Sim steps/frame', DEFAULT_ITERATIONS_PER_FRAME, '112px', { min: 1, step: 1 });
+const iterationsPerFrameLabel = makeNumberLabel('Sim steps/frame', DEFAULT_ITERATIONS_PER_FRAME, '112px', { min: 1, max: 256, step: 1 });
+const autoBatchLabel = makeCheckboxLabel('Auto batch for speed', false);
+autoBatchLabel.input.title = 'Adjusts batches up to 64 steps using GPU completion feedback. The time step and physics stay the same.';
 const stepIterationsLabel = makeNumberLabel('Single-step size', DEFAULT_STEP_ITERATIONS, '118px', { min: 1, step: 1 });
 const timeStepLabel = makeNumberLabel('Time step', DEFAULT_TIME_STEP, '88px', { min: 0.001, step: 0.001 });
 const rainRateLabel = makeNumberLabel('Background rain', DEFAULT_RAIN_RATE, '108px', { min: 0, step: 0.0001 });
 const evaporationRateLabel = makeNumberLabel('Evaporation', DEFAULT_EVAPORATION_RATE, '96px', { min: 0, step: 0.001 });
 const pipeAreaLabel = makeNumberLabel('Water flow width', DEFAULT_PIPE_AREA, '112px', { min: 0.1, step: 0.1 });
 const gravityLabel = makeNumberLabel('Gravity', DEFAULT_GRAVITY, '84px', { min: 0.1, step: 0.1 });
+const flowDragLabel = makeNumberLabel('Flow damping / s', 2, '100px', { min: 0, step: 0.1 });
+const outflowFractionLabel = makeNumberLabel('Max drainage / step', 0.5, '100px', { min: 0.05, max: 1, step: 0.05 });
 const capacityScaleLabel = makeNumberLabel('Sediment carry', DEFAULT_CAPACITY_SCALE, '104px', { min: 0, step: 0.01 });
 const suspensionRateLabel = makeNumberLabel('Erode into water', DEFAULT_SUSPENSION_RATE, '112px', { min: 0, step: 0.01 });
+const bankErosionRateLabel = makeNumberLabel('River bank retreat', 0, '112px', { min: 0, step: 0.1 });
+const bankBendBiasLabel = makeNumberLabel('Outer bend bias', 24, '112px', { min: 0, step: 1 });
+const bendSedimentLabel = makeNumberLabel('Inner bend sediment drift', 0, '112px', { min: 0, step: 0.1 });
 const depositionRateLabel = makeNumberLabel('Deposit from water', DEFAULT_DEPOSITION_RATE, '118px', { min: 0, step: 0.01 });
-const softeningRateLabel = makeNumberLabel('Bank softening', DEFAULT_SOFTENING_RATE, '108px', { min: 0, step: 0.01 });
-const maxErosionDepthLabel = makeNumberLabel('Max cut depth', DEFAULT_MAX_EROSION_DEPTH, '104px', { min: 0.001, step: 0.01 });
+const softeningRateLabel = makeNumberLabel('Loose soil re-erosion', DEFAULT_SOFTENING_RATE, '108px', { min: 0, step: 0.01 });
+const maxErosionDepthLabel = makeNumberLabel('Cut / depth limit', DEFAULT_MAX_EROSION_DEPTH, '104px', { min: 0.001, step: 0.01 });
 const thermalRateLabel = makeNumberLabel('Slope collapse', DEFAULT_THERMAL_RATE, '104px', { min: 0, step: 0.01 });
-const talusCoeffLabel = makeNumberLabel('Slope limit scale', DEFAULT_TALUS_COEFF, '118px', { min: 0, step: 0.01 });
-const talusBiasLabel = makeNumberLabel('Slope limit bias', DEFAULT_TALUS_BIAS, '110px', { min: 0, step: 0.01 });
+const talusCoeffLabel = makeNumberLabel('Talus slope scale', DEFAULT_TALUS_COEFF, '118px', { min: 0, step: 0.001 });
+const talusBiasLabel = makeNumberLabel('Talus slope bias', DEFAULT_TALUS_BIAS, '110px', { min: 0, step: 0.001 });
 const renderHeightScaleLabel = makeNumberLabel('Terrain exaggeration', DEFAULT_RENDER_HEIGHT_SCALE, '130px', { min: 0, step: 0.05 });
 const waterHeightScaleLabel = makeNumberLabel('Water height scale', DEFAULT_WATER_HEIGHT_SCALE, '122px', { min: 0, step: 0.01 });
 const edgeWaterFloorLabel = makeNumberLabel('Min edge water', DEFAULT_EDGE_WATER_FLOOR, '110px', { min: 0, step: 0.005 });
@@ -684,7 +715,10 @@ const sourceXLabel = makeNumberLabel('Spring X %', DEFAULT_SOURCE_X, '92px', { m
 const sourceYLabel = makeNumberLabel('Spring Y %', DEFAULT_SOURCE_Y, '92px', { min: 0, max: 100, step: 1 });
 const sourceRadiusLabel = makeNumberLabel('Spring radius px', DEFAULT_SOURCE_RADIUS, '108px', { min: 1, step: 1 });
 const sourceStrengthLabel = makeNumberLabel('Spring flow rate', DEFAULT_SOURCE_STRENGTH, '104px', { min: 0, step: 0.005 });
-const rainDurationLabel = makeNumberLabel('Rain duration s', DEFAULT_RAIN_DURATION, '104px', { min: 0, step: 0.5 });
+const sourceSedimentLabel = makeNumberLabel('River sediment load', 0, '104px', { min: 0, step: 0.01 });
+sourceSedimentLabel.input.title = 'Sediment supplied per unit of spring water. Rain carries no added sediment.';
+const rainDurationLabel = makeNumberLabel('Rain / spring duration s', DEFAULT_RAIN_DURATION, '104px', { min: 0, step: 0.5 });
+rainDurationLabel.input.title = '0 keeps sources running. A finite duration stops background rain and springs together.';
 const pulse2DurationLabel = makeNumberLabel('Pulse 2 sec', DEFAULT_PULSE2_DURATION, '92px', { min: 0, step: 0.5 });
 const sourceLayoutLabel = makeSelectLabel('Spring mode', [
   { value: 0, label: 'painted springs' },
@@ -698,7 +732,7 @@ const tessellationLabel = makeSelectLabel('Sim tess', [
   { value: 2, label: '2x' },
   { value: 4, label: '4x' },
 ], DEFAULT_TESSELLATION);
-const hydraulic8WayLabel = makeCheckboxLabel('8-way hydraulic pipes', DEFAULT_HYDRAULIC_8_WAY);
+const closedBoundaryLabel = makeCheckboxLabel('Closed boundaries', false);
 const precipEnabledLabel = makeCheckboxLabel('Enable precipitation', DEFAULT_PRECIP_ENABLED);
 const thermalEnabledLabel = makeCheckboxLabel('Enable thermal erosion', DEFAULT_THERMAL_ENABLED);
 const hydraulicErosionEnabledLabel = makeCheckboxLabel('Enable hydraulic erosion', DEFAULT_HYDRAULIC_EROSION_ENABLED);
@@ -709,21 +743,23 @@ const renderModeLabel = makeSelectLabel('View', [
   { value: 4, label: 'erodability' },
   { value: 5, label: 'thermal' },
   { value: 6, label: 'erosion/deposition history' },
+  { value: 8, label: 'slope relief' },
+  { value: 9, label: 'river flow' },
   { value: 7, label: 'natural geomorph' },
+], 8);
+const renderDetailLabel = makeSelectLabel('Mesh detail', [
+  { value: 0, label: 'auto · fast preview' }, { value: 1, label: 'full resolution' },
+  { value: 2, label: 'every 2 cells' }, { value: 4, label: 'every 4 cells' },
 ], 0);
 
-const presetLabel = makeSelectLabel('Preset', [
-  { value: 'paper_balanced', label: 'paper balanced' },
-  { value: 'river_cut', label: 'river cut' },
-  { value: 'delta_depositor', label: 'delta depositor' },
-  { value: 'meander_builder', label: 'meander builder' },
-  { value: 'thermal_heavy', label: 'thermal heavy' },
-  { value: 'gentle_weathering', label: 'gentle weathering' },
-  { value: 'rapid_incision', label: 'rapid incision' },
-  { value: 'flash_flood', label: 'flash flood' },
-  { value: 'badlands', label: 'badlands' },
-  { value: 'canyon_carver', label: 'canyon carver' },
-], 'paper_balanced');
+const presetLabel = makeSelectLabel('Preset', Object.entries(EROSION_PRESETS).map(([value, preset]) => ({ value, label: preset.label })), 'paper_balanced');
+const exampleLabel = makeSelectLabel('Example map preset', Object.entries(TERRAIN_EXAMPLES).map(([value, example]) => ({ value, label: example.label })), 'alpine');
+const exampleSizeLabel = makeSelectLabel('Size', [
+  { value: 256, label: '256 · fast' }, { value: 512, label: '512 · detailed' }, { value: 1024, label: '1024 · large' },
+], 512);
+const exampleSeedLabel = makeNumberLabel('Terrain seed', 7, '80px', { min: 0, max: 4294967295, step: 1 });
+const generateExampleButton = makeButton('Load example');
+const presetNote = makeSectionNote('');
 const cameraAzimuthLabel = makeNumberLabel('Azimuth', DEFAULT_CAMERA_AZIMUTH, '84px', { min: -180, max: 180, step: 1 });
 const cameraElevationLabel = makeNumberLabel('Elevation', DEFAULT_CAMERA_ELEVATION, '84px', { min: 5, max: 89, step: 1 });
 const paintModeLabel = makeSelectLabel('Paint', [
@@ -802,8 +838,12 @@ resetRainTimerButton.disabled = true;
 const resetButton = makeButton('Reset DEM');
 resetButton.disabled = true;
 const clearButton = makeButton('Clear');
+const cameraResetButton=makeButton('Reset view');
+const cameraFlyButton=makeButton('Fly camera');
 const exportDemButton = makeButton('Export DEM PNG');
 exportDemButton.disabled = true;
+const inspectMassButton = makeButton('Inspect mass');
+const massNote = makeSectionNote('Pause and inspect mass to measure terrain, suspended sediment, and water.');
 const clearSpringsButton = makeButton('Clear painted springs');
 clearSpringsButton.disabled = true;
 
@@ -814,15 +854,51 @@ statusLine.style.fontSize = '14px';
 
 controls.append(
   fileLabel,
+  exampleLabel,
+  exampleSizeLabel,
+  exampleSeedLabel,
+  generateExampleButton,
   presetLabel,
   applyPresetButton,
   runButton,
   stepButton,
   exportDemButton,
+  inspectMassButton,
   resetButton,
   clearButton,
   statusLine,
 );
+
+controls.append(presetNote);
+presetNote.style.flexBasis = '100%';
+const meshDemoLink = document.createElement('a');
+meshDemoLink.href = 'examples/erode-mesh.html';
+meshDemoLink.textContent = 'Erode → final adaptive mesh';
+meshDemoLink.style.color = '#92d4d2';
+controls.append(meshDemoLink);
+const meshControls=createMeshControls({
+  onbuild:async options=>{
+    state.mesh={...state.mesh,busy:true};updatePresetAvailability();
+    runButton.disabled=stepButton.disabled=generateExampleButton.disabled=resetButton.disabled=true;
+    meshControls.update({busy:true,message:'Building the paused hydraulic mesh…'});
+    try {const response=await callWorker('buildMesh',{options});state.mesh=response.mesh;meshControls.update({...response.mesh,busy:false,ready:true});}
+    catch(error){state.mesh={...state.mesh,busy:false};meshControls.update({busy:false,message:error.message});}
+    finally{runButton.disabled=stepButton.disabled=!state.gpuStats?.ready;resetButton.disabled=!state.gpuStats?.ready;updatePresetAvailability();}
+  },
+  onview:async view=>{
+    try{const response=await callWorker('meshView',{view});state.mesh=response.mesh;}
+    catch(error){meshControls.update({message:error.message});}
+  },
+  onwater:async(action,options)=>{
+    meshControls.update({busy:true});
+    try{if(action==='inspect'){const response=await callWorker('meshWaterStats');const w=response.water;if(!w)throw Error('Run mesh water first.');
+      meshControls.update({busy:false,message:`Mesh water: ${w.time.toFixed(2)} s · ${w.steps} steps · stable step ${w.dt.toFixed(5)} s\nWater volume ${w.totalWater.toPrecision(6)} · depth max ${w.maxDepth.toFixed(4)} · ${w.invalid} invalid cells`});return;}
+      const response=await callWorker('meshWater',{action,options});state.mesh=response.mesh;state.running=response.running;
+      meshControls.update({...response.mesh,busy:false,running:false,ready:true});runButton.textContent=state.running?'Pause':'Run';updateStatus();}
+    catch(error){meshControls.update({busy:false,message:error.message});}
+  },
+});
+controls.append(meshControls.root);meshControls.root.style.flexBasis='100%';
 
 const layout = document.createElement('div');
 layout.style.display = 'grid';
@@ -837,6 +913,7 @@ viewerPanel.style.borderRadius = '12px';
 viewerPanel.style.padding = '12px';
 viewerPanel.style.boxSizing = 'border-box';
 viewerPanel.style.minWidth = '0';
+viewerPanel.append(massNote);
 
 const viewerTitle = document.createElement('div');
 viewerTitle.textContent = 'Render view:';
@@ -942,14 +1019,17 @@ const sharedFlowSection = makeSectionCard('Shared water flow and simulation');
 sharedFlowSection.append(makeSectionNote('These affect precipitation, springs, water flow, edge runoff retention, and general simulation pacing. They are not thermal-only.'));
 sharedFlowSection.body.append(
   iterationsPerFrameLabel,
+  autoBatchLabel,
   stepIterationsLabel,
   timeStepLabel,
   rainRateLabel,
   evaporationRateLabel,
   pipeAreaLabel,
   gravityLabel,
+  flowDragLabel,
+  outflowFractionLabel,
   tessellationLabel,
-  hydraulic8WayLabel,
+  closedBoundaryLabel,
   metersPerPixelLabel,
   edgeWaterFloorLabel,
 );
@@ -959,13 +1039,16 @@ hydraulicSection.append(makeSectionNote('These only change hydraulic erosion and
 hydraulicSection.body.append(
   capacityScaleLabel,
   suspensionRateLabel,
+  bankErosionRateLabel,
+  bankBendBiasLabel,
+  bendSedimentLabel,
   depositionRateLabel,
   softeningRateLabel,
   maxErosionDepthLabel,
 );
 
 const thermalSection = makeSectionCard('Thermal erosion only');
-thermalSection.append(makeSectionNote('These only affect slope collapse and talus behavior.'));
+thermalSection.append(makeSectionNote('Talus threshold = cell size × (bias + scale × resistance). Erodability 0 resists collapse; 1 is loose. Collapse conserves solid material and can continue with no water.'));
 thermalSection.body.append(
   thermalRateLabel,
   talusCoeffLabel,
@@ -978,6 +1061,7 @@ springsSection.body.append(
   sourceLayoutLabel,
   sourceRadiusLabel,
   sourceStrengthLabel,
+  sourceSedimentLabel,
   pulse2DurationLabel,
   randomSpringCountLabel,
   springSeedLabel,
@@ -988,6 +1072,7 @@ const viewSection = makeSectionCard('View and shading');
 viewSection.append(makeSectionNote('Render-only controls. These do not change erosion behavior. Natural geomorph uses erosion/deposition history plus thermal activity to tint rock, soil, alluvium, and colluvium.'));
 viewSection.body.append(
   renderModeLabel,
+  renderDetailLabel,
   renderHeightScaleLabel,
   waterHeightScaleLabel,
   waterOpacityLabel,
@@ -995,12 +1080,13 @@ viewSection.body.append(
 );
 
 const cameraSection = makeSectionCard('Camera and navigation');
-cameraSection.append(makeSectionNote('Orbit inputs below. Click the canvas with paint off for pointer look, then use WASD to move, Space to go up, C to go down, and Esc to release.'));
+cameraSection.append(makeSectionNote('Drag to orbit and scroll to zoom. Fly camera enables pointer look: WASD to move, Space up, C down, Esc to return to orbit.'));
 cameraSection.body.append(
   cameraAzimuthLabel,
   cameraElevationLabel,
   // cameraDistanceLabel,
 );
+cameraSection.body.append(cameraFlyButton);
 
 const paintSection = makeSectionCard('Painting');
 paintSection.append(makeSectionNote('Terrain and spring painting tools. Pointer look is disabled while a paint mode is active.'));
@@ -1016,6 +1102,11 @@ settingsStack.append(cameraSection, viewSection, demSourceSection, processSectio
 sidePanel.append(settingsStack, statsTitle, statsBlock);
 layout.append(viewerPanel, sidePanel);
 root.append(heading, controls, layout);
+const studioUi=mountStudio({root,heading,controls,layout,viewerPanel,viewerTitle,canvasWrap,sidePanel,settingsStack,
+  exampleLabel,exampleSizeLabel,exampleSeedLabel,generateExampleButton,fileLabel,presetLabel,applyPresetButton,presetNote,
+  runButton,stepButton,resetButton,clearButton,exportDemButton,inspectMassButton,statusLine,massNote,
+  cameraResetButton,
+  meshControls,meshDemoLink,statsTitle,statsBlock});
 
 document.body.style.margin = '0';
 document.body.style.background = '#111';
@@ -1039,6 +1130,49 @@ window.addEventListener('resize', () => {
   syncWorkerCanvasSize();
   postWorker('render');
 });
+
+async function loadSelectedExample() {
+  if(state.simulationLoading || state.mesh?.busy)return;
+  stopLoop();
+  resetOrbitCamera();
+  const name = exampleLabel.input.value;
+  const example = TERRAIN_EXAMPLES[name];
+  state.generatedExample = { name, size: Number(exampleSizeLabel.input.value), seed: readNumber(exampleSeedLabel, 7) };
+  state.sourceFile = null;
+  state.sourceUploadedToWorker = false;
+  state.layerSourceFiles = [null, null, null, null];
+  fileInput.value = '';
+  demSourceModeLabel.input.value = example.layered ? 'packed_rgba' : 'single';
+  tessellationLabel.input.value = '1';
+  applyPreset(example.preset);
+  const materials = terrainExampleOptions(name, EROSION_PRESETS[example.preset]).layerConfig?.layers || [];
+  for (const [i, layer] of layerMaterialControls.entries()) {
+    const material = materials[i];
+    layer.enableLabel.input.checked = !!material || i === 0;
+    layer.heading.textContent = `Layer ${i + 1}${material ? ' — ' + material.label : ''}`;
+    layer.materialPresetLabel.input.value = 'custom';
+    layer.heightMinLabel.input.value = '0';
+    layer.heightMaxLabel.input.value = '1';
+    layer.hardnessMinLabel.input.value = String(material?.hardnessMin ?? 0);
+    layer.hardnessMaxLabel.input.value = String(material?.hardnessMax ?? 0.02);
+    layer.thermalEnableLabel.input.checked = material?.thermalEnabled ?? false;
+  }
+  updateLayerDemUiState();
+  closedBoundaryLabel.input.checked = !!example.closed;
+  generateExampleButton.disabled = true;
+  for(const input of [exampleLabel.input,exampleSizeLabel.input,exampleSeedLabel.input,presetLabel.input,applyPresetButton])input.disabled=true;
+  studioUi.showExample(name,true);
+  try { await initializeSimulation();studioUi.showExample(name,false); }
+  finally { generateExampleButton.disabled = false;
+    for(const input of [exampleLabel.input,exampleSizeLabel.input,exampleSeedLabel.input,presetLabel.input,applyPresetButton])input.disabled=false;
+  }
+}
+function updatePresetAvailability(){
+  const blocked=state.simulationLoading||state.mesh?.busy||state.mesh?.waterRunning;
+  for(const input of [exampleLabel.input,exampleSizeLabel.input,exampleSeedLabel.input,presetLabel.input,applyPresetButton,generateExampleButton])input.disabled=!!blocked;
+}
+generateExampleButton.addEventListener('click',()=>void loadSelectedExample());
+exampleLabel.input.addEventListener('change',()=>void loadSelectedExample());
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
@@ -1086,6 +1220,7 @@ for (const [layerIndex, layer] of layerMaterialControls.entries()) {
     });
   }
   layer.filePickerLabel.input.addEventListener('change', () => {
+    state.generatedExample = null;
     const file = layer.filePickerLabel.input.files?.[0] || null;
     state.layerSourceFiles[layerIndex] = file;
     state.sourceUploadedToWorker = false;
@@ -1100,6 +1235,29 @@ for (const [layerIndex, layer] of layerMaterialControls.entries()) {
 
 applyPresetButton.addEventListener('click', () => {
   applyPreset(presetLabel.input.value);
+  postWorker('resetRainTimer');
+});
+presetLabel.input.addEventListener('change',()=>{
+  applyPreset(presetLabel.input.value);
+  postWorker('resetRainTimer');
+});
+inspectMassButton.addEventListener('click', async () => {
+  if (!state.gpuStats?.ready || state.readbackPending) return;
+  stopLoop();
+  state.readbackPending = true;
+  inspectMassButton.disabled = true;
+  try {
+    const response = await callWorker('readbackStats', { includeMass: true });
+    state.gpuStats = response.stats;
+    const stats = response.stats;
+    massNote.textContent = `At ${stats.statisticsSimTime.toFixed(2)} s — solid: ${stats.totalSolid.toPrecision(7)} (terrain ${stats.totalTerrain.toPrecision(7)}, suspended ${stats.totalSediment.toPrecision(7)}). Water: ${stats.totalWater.toPrecision(7)}. ${stats.invalidCells ? `${stats.invalidCells} invalid cells excluded. ` : ''}${closedBoundaryLabel.input.checked ? 'Closed boundaries retain solid material.' : 'Open boundaries export solid material with runoff.'}`;
+    updateStats();
+  } catch (error) {
+    massNote.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.readbackPending = false;
+    inspectMassButton.disabled = false;
+  }
 });
 
 runButton.addEventListener('click', () => {
@@ -1137,8 +1295,17 @@ iterationsPerFrameLabel.input.addEventListener('input', async () => {
   scheduleStatsUpdate();
   if (!state.workerReady) return;
   if (state.running) {
-    await callWorker('startLoop', { iterationsPerFrame });
+    await callWorker('startLoop', { iterationsPerFrame, autoBatch: autoBatchLabel.input.checked });
   }
+});
+
+autoBatchLabel.input.addEventListener('change', () => {
+  iterationsPerFrameLabel.input.disabled = autoBatchLabel.input.checked;
+  if (state.running) postWorker('startLoop', {
+    iterationsPerFrame: Math.max(1, Math.floor(readNumber(iterationsPerFrameLabel, DEFAULT_ITERATIONS_PER_FRAME))),
+    autoBatch: autoBatchLabel.input.checked,
+  });
+  scheduleStatsUpdate();
 });
 
 
@@ -1188,7 +1355,7 @@ paintModeLabel.input.addEventListener('change', () => {
   scheduleStatsUpdate();
 });
 
-for (const label of [precipEnabledLabel, thermalEnabledLabel, hydraulicErosionEnabledLabel]) {
+for (const label of [precipEnabledLabel, thermalEnabledLabel, hydraulicErosionEnabledLabel, closedBoundaryLabel]) {
   label.input.addEventListener('change', () => {
     refreshProcessControlState();
     applySimulationParams();
@@ -1222,8 +1389,13 @@ for (const label of [
   evaporationRateLabel,
   pipeAreaLabel,
   gravityLabel,
+  flowDragLabel,
+  outflowFractionLabel,
   capacityScaleLabel,
   suspensionRateLabel,
+  bankErosionRateLabel,
+  bankBendBiasLabel,
+  bendSedimentLabel,
   depositionRateLabel,
   softeningRateLabel,
   maxErosionDepthLabel,
@@ -1241,18 +1413,16 @@ for (const label of [
   sourceYLabel,
   sourceRadiusLabel,
   sourceStrengthLabel,
+  sourceSedimentLabel,
   rainDurationLabel,
   pulse2DurationLabel,
   randomSpringCountLabel,
   springSeedLabel,
 ]) {
   label.input.addEventListener('input', () => {
+    if(label===cameraAzimuthLabel || label===cameraElevationLabel)updateOrbitPosition();
     applySimulationParams();
-    if (state.running) {
-      postWorker('startLoop', { iterationsPerFrame: Math.max(1, Math.floor(readNumber(iterationsPerFrameLabel, DEFAULT_ITERATIONS_PER_FRAME))) });
-    } else {
-      postWorker('render');
-    }
+    if(!state.running)postWorker('render');
     if (sourcePointSensitiveInputs.has(label)) {
       void refreshWorkerStatusLight();
     }
@@ -1277,17 +1447,12 @@ sourceLayoutLabel.input.addEventListener('change', () => {
   scheduleStatsUpdate();
 });
 
-hydraulic8WayLabel.input.addEventListener('change', () => {
+renderModeLabel.input.addEventListener('change', () => {
   applySimulationParams();
-  if (state.running) {
-    postWorker('startLoop', { iterationsPerFrame: Math.max(1, Math.floor(readNumber(iterationsPerFrameLabel, DEFAULT_ITERATIONS_PER_FRAME))) });
-  } else {
-    postWorker('render');
-  }
+  postWorker('render');
   scheduleStatsUpdate();
 });
-
-renderModeLabel.input.addEventListener('change', () => {
+renderDetailLabel.input.addEventListener('change', () => {
   applySimulationParams();
   postWorker('render');
   scheduleStatsUpdate();
@@ -1334,6 +1499,21 @@ function updateCanvasInteractionState() {
 function getCameraPosition() {
   return [state.cameraPosX, state.cameraPosY, state.cameraPosZ];
 }
+
+let orbitDrag=null,cameraRenderFrame=0;
+function updateOrbitPosition(distance=Math.hypot(state.cameraPosX,state.cameraPosY,state.cameraPosZ)){
+  const a=degToRad(readNumber(cameraAzimuthLabel,DEFAULT_CAMERA_AZIMUTH)),e=degToRad(readNumber(cameraElevationLabel,DEFAULT_CAMERA_ELEVATION));
+  distance=clampValue(distance,.65,12);
+  state.cameraPosX=Math.cos(e)*Math.cos(a)*distance;state.cameraPosY=Math.sin(e)*distance;state.cameraPosZ=Math.cos(e)*Math.sin(a)*distance;
+}
+function requestCameraRender(){if(cameraRenderFrame)return;cameraRenderFrame=requestAnimationFrame(()=>{
+  cameraRenderFrame=0;applySimulationParams();postWorker('render');drawSourceOverlay();scheduleStatsUpdate();
+});}
+function resetOrbitCamera(){document.exitPointerLock?.();orbitDrag=null;
+  cameraAzimuthLabel.input.value=String(DEFAULT_CAMERA_AZIMUTH);cameraElevationLabel.input.value=String(DEFAULT_CAMERA_ELEVATION);
+  updateOrbitPosition(DEFAULT_CAMERA_DISTANCE);requestCameraRender();
+}
+cameraResetButton.addEventListener('click',resetOrbitCamera);
 
 function getCameraBasis() {
   const azimuth = degToRad(readNumber(cameraAzimuthLabel, DEFAULT_CAMERA_AZIMUTH));
@@ -1437,7 +1617,9 @@ document.addEventListener('pointermove', handlePointerLookMove, { passive: false
 document.addEventListener('keydown', (event) => handleNavigationKey(event, true), { passive: false });
 document.addEventListener('keyup', (event) => handleNavigationKey(event, false), { passive: false });
 gpuCanvas.addEventListener('wheel', (event) => {
-  if (document.pointerLockElement === gpuCanvas) event.preventDefault();
+  if(!state.gpuStats?.ready || paintModeLabel.input.value!=='none')return;
+  event.preventDefault();if(document.pointerLockElement===gpuCanvas)return;
+  updateOrbitPosition(Math.hypot(state.cameraPosX,state.cameraPosY,state.cameraPosZ)*Math.exp(clampValue(event.deltaY,-300,300)*.001));requestCameraRender();
 }, { passive: false });
 
 function refreshProcessControlState() {
@@ -1449,16 +1631,20 @@ function refreshProcessControlState() {
   rainRateLabel.input.disabled = !precipEnabled;
   capacityScaleLabel.input.disabled = !hydraulicErosionEnabled;
   suspensionRateLabel.input.disabled = !hydraulicErosionEnabled;
+  bankErosionRateLabel.input.disabled = bankBendBiasLabel.input.disabled = !hydraulicErosionEnabled;
+  bendSedimentLabel.input.disabled = !hydraulicErosionEnabled;
   depositionRateLabel.input.disabled = !hydraulicErosionEnabled;
   softeningRateLabel.input.disabled = !hydraulicErosionEnabled;
   maxErosionDepthLabel.input.disabled = !hydraulicErosionEnabled;
   thermalRateLabel.input.disabled = !thermalEnabled;
   talusCoeffLabel.input.disabled = !thermalEnabled;
   talusBiasLabel.input.disabled = !thermalEnabled;
-  rainDurationLabel.input.disabled = !precipEnabled;
+  rainDurationLabel.input.disabled = !precipEnabled && !springsEnabled;
+  pulse2DurationLabel.input.disabled = !precipEnabled && !springsEnabled;
   sourceLayoutLabel.input.disabled = !springsEnabled;
   sourceRadiusLabel.input.disabled = !springsEnabled || !randomMode;
   sourceStrengthLabel.input.disabled = !springsEnabled || !randomMode;
+  sourceSedimentLabel.input.disabled = !springsEnabled;
   randomSpringCountLabel.input.disabled = !springsEnabled || !randomMode;
   springSeedLabel.input.disabled = !springsEnabled || !randomMode;
   resetRainTimerButton.disabled = !state.gpuStats?.ready;
@@ -1469,7 +1655,7 @@ gpuCanvas.addEventListener('contextmenu', (event) => {
   if (paintModeLabel.input.value !== 'none' || document.pointerLockElement === gpuCanvas) event.preventDefault();
 });
 
-gpuCanvas.addEventListener('click', (event) => {
+cameraFlyButton.addEventListener('click', (event) => {
   if (!state.gpuStats?.ready || !isPointerLookAllowed()) return;
   event.preventDefault();
   gpuCanvas.focus();
@@ -1482,18 +1668,32 @@ gpuCanvas.addEventListener('pointerdown', (event) => {
   if ((paintModeLabel.input.value !== 'none' || document.pointerLockElement === gpuCanvas) && state.gpuStats?.ready) {
     event.preventDefault();
   }
-  if (paintModeLabel.input.value === 'none' || !state.gpuStats?.ready) return;
+  if(!state.gpuStats?.ready)return;
+  if(paintModeLabel.input.value==='none'){
+    if(document.pointerLockElement===gpuCanvas || event.button!==0)return;
+    event.preventDefault();orbitDrag={id:event.pointerId,x:event.clientX,y:event.clientY};gpuCanvas.setPointerCapture(event.pointerId);gpuCanvas.style.cursor='grabbing';return;
+  }
   state.isPainting = true;
   gpuCanvas.setPointerCapture?.(event.pointerId);
   void applyBrushFromEvent(event);
 });
 
 gpuCanvas.addEventListener('pointermove', (event) => {
+  if(orbitDrag?.id===event.pointerId){event.preventDefault();
+    const a=readNumber(cameraAzimuthLabel,DEFAULT_CAMERA_AZIMUTH)+(event.clientX-orbitDrag.x)*.3;
+    cameraAzimuthLabel.input.value=String(((a+180)%360+360)%360-180);
+    cameraElevationLabel.input.value=String(clampValue(readNumber(cameraElevationLabel,DEFAULT_CAMERA_ELEVATION)+(event.clientY-orbitDrag.y)*.3,5,85));
+    orbitDrag.x=event.clientX;orbitDrag.y=event.clientY;updateOrbitPosition();requestCameraRender();return;
+  }
   if (!state.isPainting) return;
   event.preventDefault();
   void applyBrushFromEvent(event);
 });
 
+function stopOrbit(event){if(orbitDrag?.id===event.pointerId){orbitDrag=null;updateCanvasInteractionState();if(gpuCanvas.hasPointerCapture(event.pointerId))gpuCanvas.releasePointerCapture(event.pointerId);}}
+gpuCanvas.addEventListener('pointerup', stopOrbit);
+gpuCanvas.addEventListener('pointercancel',stopOrbit);
+gpuCanvas.addEventListener('lostpointercapture',stopOrbit);
 gpuCanvas.addEventListener('pointerup', stopPainting);
 gpuCanvas.addEventListener('pointerleave', stopPainting);
 gpuCanvas.addEventListener('pointercancel', stopPainting);
@@ -1525,6 +1725,7 @@ function syncCanvasSizes() {
 }
 
 async function loadSourceImage(file) {
+  state.generatedExample = null;
   debugLog('loadSourceImage begin', file.name);
   stopLoop();
   setGPUCanvasVisible(false);
@@ -1563,6 +1764,7 @@ async function initializeSimulation() {
   stopLoop();
   exportDemButton.disabled = true;
   state.simulationLoading = true;
+  massNote.textContent = 'Pause and inspect mass to measure terrain, suspended sediment, and water.';
   state.simReady = false;
   setGPUCanvasVisible(false);
   updateStatus('Loading DEM…');
@@ -1592,7 +1794,10 @@ async function initializeSimulation() {
         payload.blob = state.sourceFile;
       }
     }
-    const response = await callWorker('loadDEMImage', payload);
+    if (state.generatedExample && !state.sourceUploadedToWorker) {
+      Object.assign(payload, state.generatedExample);
+    }
+    const response = await callWorker(state.generatedExample && !state.sourceUploadedToWorker ? 'generateExample' : 'loadDEMImage', payload);
     if (requestId !== state.simulationRequestId) return;
     state.sourceUploadedToWorker = true;
     state.buildCount++;
@@ -1773,89 +1978,17 @@ function stopPainting() {
 }
 
 function applyPreset(name) {
-  const presets = {
-    paper_balanced: {
-      iterationsPerFrame: 5, stepIterations: 128,
-      timeStep: 0.02, rainRate: 0.001, evaporationRate: 0.015, pipeArea: 20.0, gravity: 9.81,
-      capacityScale: 0.82, suspensionRate: 0.32, depositionRate: 1.22, softeningRate: 2.8,
-      maxErosionDepth: 0.09, thermalRate: 0.24, talusCoeff: 0.92, talusBias: 0.12,
-      sourceStrength: 0.06, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
-    },
-    river_cut: {
-      iterationsPerFrame: 5, stepIterations: 160,
-      timeStep: 0.02, rainRate: 0.0015, evaporationRate: 0.012, pipeArea: 22.0, gravity: 9.81,
-      capacityScale: 0.95, suspensionRate: 0.48, depositionRate: 1.02, softeningRate: 2.8,
-      maxErosionDepth: 0.08, thermalRate: 0.22, talusCoeff: 0.88, talusBias: 0.11,
-      sourceStrength: 0.09, sourceRadius: 4.0, sourceEnabled: true, sourceLayoutMode: 1, randomSpringCount: 4,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
-    },
-    delta_depositor: {
-      iterationsPerFrame: 5, stepIterations: 192,
-      timeStep: 0.02, rainRate: 0.016, evaporationRate: 0.004, pipeArea: 30.0, gravity: 9.81,
-      capacityScale: 0.38, suspensionRate: 0.12, depositionRate: 2.2, softeningRate: 1.4,
-      maxErosionDepth: 0.04, thermalRate: 0.08, talusCoeff: 0.82, talusBias: 0.10,
-      sourceStrength: 0.0, sourceRadius: 5.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 85.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.07, renderMode: 0,
-    },
-    meander_builder: {
-      iterationsPerFrame: 5, stepIterations: 160,
-      timeStep: 0.02, rainRate: 0.003, evaporationRate: 0.004, pipeArea: 32.0, gravity: 9.81,
-      capacityScale: 0.30, suspensionRate: 0.10, depositionRate: 2.45, softeningRate: 1.1,
-      maxErosionDepth: 0.035, thermalRate: 0.18, talusCoeff: 0.86, talusBias: 0.10,
-      sourceStrength: 0.11, sourceRadius: 5.0, sourceEnabled: true, sourceLayoutMode: 1, randomSpringCount: 3,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.07, renderMode: 0,
-    },
-    thermal_heavy: {
-      iterationsPerFrame: 5, stepIterations: 128,
-      timeStep: 0.02, rainRate: 0.0, evaporationRate: 0.008, pipeArea: 8.0, gravity: 9.81,
-      capacityScale: 0.1, suspensionRate: 0.05, depositionRate: 0.85, softeningRate: 1.0,
-      maxErosionDepth: 0.06, thermalRate: 1.10, talusCoeff: 0.55, talusBias: 0.05,
-      sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 5,
-    },
-    gentle_weathering: {
-      iterationsPerFrame: 5, stepIterations: 96,
-      timeStep: 0.02, rainRate: 0.004, evaporationRate: 0.015, pipeArea: 12.0, gravity: 9.81,
-      capacityScale: 0.45, suspensionRate: 0.18, depositionRate: 1.0, softeningRate: 2.0,
-      maxErosionDepth: 0.10, thermalRate: 0.12, talusCoeff: 0.8, talusBias: 0.1,
-      sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
-    },
-    rapid_incision: {
-      iterationsPerFrame: 5, stepIterations: 192,
-      timeStep: 0.022, rainRate: 0.018, evaporationRate: 0.010, pipeArea: 26.0, gravity: 9.81,
-      capacityScale: 1.4, suspensionRate: 0.9, depositionRate: 0.75, softeningRate: 6.0,
-      maxErosionDepth: 0.10, thermalRate: 0.12, talusCoeff: 0.72, talusBias: 0.08,
-      sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
-    },
-    flash_flood: {
-      iterationsPerFrame: 5, stepIterations: 192,
-      timeStep: 0.02, rainRate: 0.03, evaporationRate: 0.008, pipeArea: 24.0, gravity: 9.81,
-      capacityScale: 1.3, suspensionRate: 0.85, depositionRate: 0.8, softeningRate: 5.0,
-      maxErosionDepth: 0.08, thermalRate: 0.10, talusCoeff: 0.75, talusBias: 0.08,
-      sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 50.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 0,
-    },
-    badlands: {
-      iterationsPerFrame: 5, stepIterations: 160,
-      timeStep: 0.02, rainRate: 0.01, evaporationRate: 0.012, pipeArea: 18.0, gravity: 9.81,
-      capacityScale: 1.0, suspensionRate: 0.55, depositionRate: 0.95, softeningRate: 4.0,
-      maxErosionDepth: 0.09, thermalRate: 0.22, talusCoeff: 0.68, talusBias: 0.08,
-      sourceStrength: 0.0, sourceRadius: 4.0, sourceEnabled: false, sourceLayoutMode: 0, randomSpringCount: 1,
-      rainDuration: 25.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, renderMode: 0,
-    },
-    canyon_carver: {
-      iterationsPerFrame: 5, stepIterations: 224,
-      timeStep: 0.022, rainRate: 0.014, evaporationRate: 0.010, pipeArea: 28.0, gravity: 9.81,
-      capacityScale: 1.55, suspensionRate: 1.0, depositionRate: 0.7, softeningRate: 6.0,
-      maxErosionDepth: 0.08, thermalRate: 0.16, talusCoeff: 0.72, talusBias: 0.08,
-      sourceStrength: 0.08, sourceRadius: 3.0, sourceEnabled: true, sourceLayoutMode: 1, randomSpringCount: 4,
-      rainDuration: 0.0, pulse2Duration: 0.0, metersPerPixel: 100, waterHeightScale: 0.06, edgeWaterFloor: 0.0, renderMode: 0,
-    },
-  };
-  const preset = presets[name] || presets.paper_balanced;
+  const preset = EROSION_PRESETS[name] || EROSION_PRESETS.paper_balanced;
+  presetNote.textContent = preset.description;
+  closedBoundaryLabel.input.checked = !!preset.closedBoundaries;
+  presetLabel.input.value = name;
+  studioUi.showProfile(preset.label);
+  const baseLayer = layerMaterialControls[0];
+  baseLayer.materialPresetLabel.input.value = 'custom';
+  baseLayer.hardnessMinLabel.input.value = String(preset.erodabilityMin);
+  baseLayer.hardnessMaxLabel.input.value = String(preset.erodabilityMax);
+  syncSingleModeMaterialFields();
+  springSeedLabel.input.value = String(preset.sourceSeed);
   iterationsPerFrameLabel.input.value = String(preset.iterationsPerFrame ?? DEFAULT_ITERATIONS_PER_FRAME);
   stepIterationsLabel.input.value = String(preset.stepIterations ?? DEFAULT_STEP_ITERATIONS);
   timeStepLabel.input.value = String(preset.timeStep);
@@ -1863,6 +1996,8 @@ function applyPreset(name) {
   evaporationRateLabel.input.value = String(preset.evaporationRate);
   pipeAreaLabel.input.value = String(preset.pipeArea);
   gravityLabel.input.value = String(preset.gravity);
+  flowDragLabel.input.value = String(preset.flowDrag);
+  outflowFractionLabel.input.value = String(preset.maxOutflowFraction);
   capacityScaleLabel.input.value = String(preset.capacityScale);
   suspensionRateLabel.input.value = String(preset.suspensionRate);
   depositionRateLabel.input.value = String(preset.depositionRate);
@@ -1872,17 +2007,23 @@ function applyPreset(name) {
   talusCoeffLabel.input.value = String(preset.talusCoeff);
   talusBiasLabel.input.value = String(preset.talusBias);
   sourceStrengthLabel.input.value = String(preset.sourceStrength);
+  sourceSedimentLabel.input.value = String(preset.sourceSedimentConcentration || 0);
+  bankErosionRateLabel.input.value = String(preset.bankErosionRate || 0);
+  bankBendBiasLabel.input.value = String(preset.bankBendBias ?? 24);
+  bendSedimentLabel.input.value = String(preset.bendSedimentRate || 0);
   rainDurationLabel.input.value = String(preset.rainDuration ?? DEFAULT_RAIN_DURATION);
   pulse2DurationLabel.input.value = String(preset.pulse2Duration ?? DEFAULT_PULSE2_DURATION);
   sourceRadiusLabel.input.value = String(preset.sourceRadius);
   precipEnabledLabel.input.checked = (preset.rainRate ?? 0) > 0;
   thermalEnabledLabel.input.checked = (preset.thermalRate ?? 0) > 0;
-  hydraulicErosionEnabledLabel.input.checked = true;
+  hydraulicErosionEnabledLabel.input.checked = preset.hydraulicErosionEnabled;
   sourceEnabledLabel.input.checked = !!preset.sourceEnabled;
   sourceLayoutLabel.input.value = String(preset.sourceLayoutMode ?? DEFAULT_SOURCE_LAYOUT_MODE);
   randomSpringCountLabel.input.value = String(preset.randomSpringCount ?? DEFAULT_RANDOM_SPRING_COUNT);
   metersPerPixelLabel.input.value = String(preset.metersPerPixel ?? DEFAULT_METERS_PER_PIXEL);
+  renderHeightScaleLabel.input.value = String(preset.renderHeightScale ?? DEFAULT_RENDER_HEIGHT_SCALE);
   waterHeightScaleLabel.input.value = String(preset.waterHeightScale ?? DEFAULT_WATER_HEIGHT_SCALE);
+  waterOpacityLabel.input.value = String(preset.waterOpacity ?? DEFAULT_WATER_OPACITY);
   edgeWaterFloorLabel.input.value = String(preset.edgeWaterFloor ?? DEFAULT_EDGE_WATER_FLOOR);
   renderModeLabel.input.value = String(preset.renderMode);
   refreshProcessControlState();
@@ -1912,12 +2053,14 @@ async function scheduleReadbackStats(force = false) {
 }
 
 function startLoop() {
+  state.mesh=null;meshControls.update({info:null,running:true,waterRunning:false});
   if (!state.workerReady || state.running) return;
   state.running = true;
   runButton.textContent = 'Pause';
   applySimulationParams();
   postWorker('startLoop', {
     iterationsPerFrame: Math.max(1, Math.floor(readNumber(iterationsPerFrameLabel, DEFAULT_ITERATIONS_PER_FRAME))),
+    autoBatch: autoBatchLabel.input.checked,
   });
   void scheduleReadbackStats(true);
   updateStatus('Running');
@@ -1926,6 +2069,7 @@ function startLoop() {
 function stopLoop() {
   if (!state.running) return;
   state.running = false;
+  meshControls.update({running:false,waterRunning:false});
   runButton.textContent = 'Run';
   postWorker('stopLoop');
   updateStatus('Paused');
@@ -1937,6 +2081,7 @@ function clearAll() {
   postWorker('clear');
   state.sourceImageInfo = null;
   state.sourceFile = null;
+  state.generatedExample = null;
   state.layerSourceFiles = [null, null, null, null];
   state.sourceUploadedToWorker = false;
   state.buildCount = 0;
@@ -2033,7 +2178,7 @@ function drawSourceOverlay() {
 function updateStatus(extra = '') {
   const parts = [];
   if (extra) parts.push(extra);
-  parts.push(state.sourceFile ? `image: ${state.sourceFileName || 'loaded'}` : 'image: none');
+  parts.push(hasAnyDemSourceSelected() ? `terrain: ${state.sourceFileName || getSourceSummaryName() || 'loaded'}` : 'terrain: none');
   if (!state.workerReady) {
     parts.push('webgpu: idle');
   } else if (state.workerWarming) {
@@ -2045,7 +2190,7 @@ function updateStatus(extra = '') {
     parts.push('dem: loading');
   } else if (state.simReady) {
     parts.push('dem: ready');
-  } else if (state.sourceFile || state.layerSourceFiles.some(Boolean)) {
+  } else if (hasAnyDemSourceSelected()) {
     parts.push('dem: not rendered');
   }
   if (state.running) parts.push('sim: running');
@@ -2066,6 +2211,8 @@ function updateStats() {
   const stats = state.gpuStats ?? { width: 0, height: 0, cellCount: 0, ready: false, iterationCount: 0 };
   const fps = state.lastFrameMs > 0 ? (1000 / Math.max(state.lastFrameMs, 1e-6)) : 0;
   const lines = [
+    `batch mode: ${autoBatchLabel.input.checked ? 'auto' : 'fixed'} · ${state.running && autoBatchLabel.input.checked ? stats.actualIterationsPerFrame ?? 1 : readNumber(iterationsPerFrameLabel, DEFAULT_ITERATIONS_PER_FRAME)} steps/frame`,
+    `GPU measurements: ${stats.gpuTimingMode === 'timestamp-query' ? 'pass timestamps' : 'submission and completion'} · sampled on Step`,
     `fps: ${Number.isFinite(fps) && fps > 0 ? fps.toFixed(1) : 'n/a'}`,
     `last frame: ${state.lastFrameMs.toFixed(3)} ms`,
     `erosion cpu: ${Number.isFinite(stats.lastCpuErosionPassMs) ? stats.lastCpuErosionPassMs.toFixed(3) : Number.isFinite(stats.lastErosionPassMs) ? stats.lastErosionPassMs.toFixed(3) : 'n/a'} ms`,
@@ -2120,7 +2267,7 @@ function updateStats() {
     `Kr rain: ${readNumber(rainRateLabel, DEFAULT_RAIN_RATE).toFixed(4)}`,
     `Ke evap: ${readNumber(evaporationRateLabel, DEFAULT_EVAPORATION_RATE).toFixed(3)}`,
     `A pipe: ${readNumber(pipeAreaLabel, DEFAULT_PIPE_AREA).toFixed(2)}`,
-    `hydraulic pipes: ${hydraulic8WayLabel.input.checked ? '8-way' : '4-way'}`,
+    `hydraulic pipes: 4-way; talus: 8-way; boundaries: ${closedBoundaryLabel.input.checked ? 'closed' : 'open'}`,
     `g gravity: ${readNumber(gravityLabel, DEFAULT_GRAVITY).toFixed(2)}`,
     `Kc capacity: ${readNumber(capacityScaleLabel, DEFAULT_CAPACITY_SCALE).toFixed(3)}`,
     `Ks suspend: ${readNumber(suspensionRateLabel, DEFAULT_SUSPENSION_RATE).toFixed(3)}`,
@@ -2151,3 +2298,10 @@ function updateStats() {
 }
 
 clearAll();
+// A ready-made starting map also makes the controls useful on the first visit.
+const initialQuery=new URLSearchParams(location.search);
+if(Object.hasOwn(TERRAIN_EXAMPLES,initialQuery.get('map')))exampleLabel.input.value=initialQuery.get('map');
+if(['256','512','1024'].includes(initialQuery.get('size')))exampleSizeLabel.input.value=initialQuery.get('size');
+void loadSelectedExample().then(()=>{
+  if(Object.hasOwn(EROSION_PRESETS,initialQuery.get('preset')))applyPreset(initialQuery.get('preset'));
+});

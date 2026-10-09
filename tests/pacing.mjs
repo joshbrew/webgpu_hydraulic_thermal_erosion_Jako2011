@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import BatchPacer from '../BatchPacer.js';
+
+const pacer = new BatchPacer();
+for (let i = 0; i < 50; i++) pacer.observe(pacer.steps, 1 + pacer.steps * 0.12);
+assert(Math.abs(1 + pacer.steps * 0.12 - 8) < 0.5, 'converges on the completion budget');
+const fastSteps = pacer.steps;
+for (let i = 0; i < 20; i++) pacer.observe(pacer.steps, 1 + pacer.steps * 0.5);
+assert(pacer.steps < fastSteps / 2, 'reduces work when the GPU slows down');
+assert(Math.abs(1 + pacer.steps * 0.5 - 8) < 0.6, 'recovers a responsive completion budget');
+for (let i = 0; i < 100; i++) pacer.observe(pacer.steps, 0.1);
+assert.equal(pacer.steps, 64, 'fast devices remain bounded');
+for (let i = 0; i < 100; i++) pacer.observe(pacer.steps, 300);
+assert.equal(pacer.steps, 1, 'slow devices retain a minimum batch');
+for (let i = 0; i < 40; i++) pacer.observe(pacer.steps, 0.1);
+assert.equal(pacer.steps, 64, 'recovers from a one-step batch after load clears');
+pacer.reset(1);
+for (const duration of [NaN, Infinity, -1, 0]) pacer.observe(pacer.steps, duration);
+assert.equal(pacer.steps, 1, 'invalid samples cannot corrupt pacing');
+pacer.reset(4);
+assert.equal(pacer.steps, 4, 'restart restores the requested initial batch');
+console.log('Adaptive batching: completion budgets, load changes, bounds and restarts passed.');
